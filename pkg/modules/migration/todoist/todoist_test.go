@@ -652,6 +652,23 @@ func TestConvertTodoistToVikunja(t *testing.T) {
 	}
 }
 
+func TestTodoistRecurrenceNote(t *testing.T) {
+	t.Run("not recurring", func(t *testing.T) {
+		assert.Empty(t, todoistRecurrenceNote("", "every day", false))
+	})
+	t.Run("successfully converted leaves no note", func(t *testing.T) {
+		assert.Empty(t, todoistRecurrenceNote("FREQ=DAILY;INTERVAL=1", "every day", true))
+	})
+	t.Run("recurring but no original string", func(t *testing.T) {
+		assert.Empty(t, todoistRecurrenceNote("", "", true))
+	})
+	t.Run("unconvertible recurrence is preserved", func(t *testing.T) {
+		note := todoistRecurrenceNote("", "jeden Tag", true)
+		assert.NotEmpty(t, note)
+		assert.Contains(t, note, "jeden Tag")
+	})
+}
+
 func TestTodoistDueStringToRRule(t *testing.T) {
 	testCases := []struct {
 		name        string

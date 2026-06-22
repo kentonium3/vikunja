@@ -340,6 +340,18 @@ func todoistDueStringToRRule(dueString string, isRecurring bool, lang string) st
 	return ""
 }
 
+// todoistRecurrenceNote returns a description note preserving a Todoist recurrence
+// string that could not be converted to an RRULE (a non-English or unsupported
+// pattern), so the user can recreate it manually instead of silently losing it.
+// Returns "" when there is nothing to preserve (not recurring, converted, or no
+// original string).
+func todoistRecurrenceNote(rruleStr, dueString string, isRecurring bool) string {
+	if !isRecurring || rruleStr != "" || dueString == "" {
+		return ""
+	}
+	return "Todoist recurrence (could not be imported automatically): " + dueString
+}
+
 func parseDate(dateString string) (date time.Time, err error) {
 	if len(dateString) == 10 {
 		// We're probably dealing with a date in the form of 2021-11-23 without a time
@@ -470,6 +482,12 @@ func convertTodoistToVikunja(sync *sync, doneItems map[string]*doneItem) (fullVi
 			// Convert Todoist recurrence to RRULE
 			if i.Due.IsRecurring {
 				task.Repeats = todoistDueStringToRRule(i.Due.String, i.Due.IsRecurring, i.Due.Lang)
+				if note := todoistRecurrenceNote(task.Repeats, i.Due.String, i.Due.IsRecurring); note != "" {
+					if task.Description != "" {
+						task.Description += "\n"
+					}
+					task.Description += note
+				}
 			}
 		}
 
