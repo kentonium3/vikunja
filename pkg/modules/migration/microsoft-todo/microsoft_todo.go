@@ -93,6 +93,137 @@ type recurrence struct {
 	Range   *taskRange `json:"range"`
 }
 
+// microsoftDayToRRule maps Microsoft Graph dayOfWeek names to RRULE BYDAY codes.
+var microsoftDayToRRule = map[string]string{
+	"sunday":    "SU",
+	"monday":    "MO",
+	"tuesday":   "TU",
+	"wednesday": "WE",
+	"thursday":  "TH",
+	"friday":    "FR",
+	"saturday":  "SA",
+}
+
+func microsoftDaysToByDay(days []string) string {
+	codes := make([]string, 0, len(days))
+	for _, d := range days {
+		if code, ok := microsoftDayToRRule[strings.ToLower(d)]; ok {
+			codes = append(codes, code)
+		}
+	}
+	return strings.Join(codes, ",")
+}
+
+// microsoftIndexToSetPos maps a relative pattern index (first..fourth, last) to an
+// RRULE BYSETPOS value. Returns 0 when the index is unset/unknown.
+func microsoftIndexToSetPos(index string) int {
+	switch strings.ToLower(index) {
+	case "first":
+		return 1
+	case "second":
+		return 2
+	case "third":
+		return 3
+	case "fourth":
+		return 4
+	case "last":
+		return -1
+	}
+	return 0
+}
+
+// microsoftDateToUntil converts a Microsoft Graph date (yyyy-MM-dd) to an RRULE
+// UNTIL value (UTC date-time). Returns "" if the date can't be parsed.
+func microsoftDateToUntil(date string) string {
+	t, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return ""
+	}
+	return t.UTC().Format("20060102T150405") + "Z"
+}
+
+// convertMicrosoftRecurrence converts a Microsoft To Do recurrence into an RFC
+// 5545 RRULE string, mapping the pattern (frequency, interval, and the
+// weekday/month-day/relative-index detail) and the range (end date or occurrence
+// count). Returns "" when there is no convertible recurrence.
+func convertMicrosoftRecurrence(rec *recurrence) string {
+	if rec == nil || rec.Pattern == nil {
+		return ""
+	}
+
+	p := rec.Pattern
+	interval := p.Interval
+	if interval < 1 {
+		interval = 1
+	}
+
+	var freq string
+	parts := []string{}
+	switch strings.ToLower(p.Type) {
+	case "daily":
+		freq = "DAILY"
+	case "weekly":
+		freq = "WEEKLY"
+		if byDay := microsoftDaysToByDay(p.DaysOfWeek); byDay != "" {
+			parts = append(parts, "BYDAY="+byDay)
+		}
+	case "absolutemonthly", "monthly":
+		freq = "MONTHLY"
+		if p.DayOfMonth > 0 {
+			parts = append(parts, fmt.Sprintf("BYMONTHDAY=%d", p.DayOfMonth))
+		}
+	case "relativemonthly":
+		freq = "MONTHLY"
+		if byDay := microsoftDaysToByDay(p.DaysOfWeek); byDay != "" {
+			parts = append(parts, "BYDAY="+byDay)
+		}
+		if pos := microsoftIndexToSetPos(p.Index); pos != 0 {
+			parts = append(parts, fmt.Sprintf("BYSETPOS=%d", pos))
+		}
+	case "absoluteyearly", "yearly":
+		freq = "YEARLY"
+		if p.Month > 0 {
+			parts = append(parts, fmt.Sprintf("BYMONTH=%d", p.Month))
+		}
+		if p.DayOfMonth > 0 {
+			parts = append(parts, fmt.Sprintf("BYMONTHDAY=%d", p.DayOfMonth))
+		}
+	case "relativeyearly":
+		freq = "YEARLY"
+		if p.Month > 0 {
+			parts = append(parts, fmt.Sprintf("BYMONTH=%d", p.Month))
+		}
+		if byDay := microsoftDaysToByDay(p.DaysOfWeek); byDay != "" {
+			parts = append(parts, "BYDAY="+byDay)
+		}
+		if pos := microsoftIndexToSetPos(p.Index); pos != 0 {
+			parts = append(parts, fmt.Sprintf("BYSETPOS=%d", pos))
+		}
+	default:
+		return ""
+	}
+
+	rule := fmt.Sprintf("FREQ=%s;INTERVAL=%d", freq, interval)
+	if len(parts) > 0 {
+		rule += ";" + strings.Join(parts, ";")
+	}
+
+	if rec.Range != nil {
+		switch strings.ToLower(rec.Range.Type) {
+		case "enddate":
+			if until := microsoftDateToUntil(rec.Range.EndDate); until != "" {
+				rule += ";UNTIL=" + until
+			}
+		case "numbered":
+			if rec.Range.NumberOfOccurrences > 0 {
+				rule += fmt.Sprintf(";COUNT=%d", rec.Range.NumberOfOccurrences)
+			}
+		}
+	}
+
+	return rule
+}
+
 type tasksResponse struct {
 	OdataContext string  `json:"@odata.context"`
 	Nextlink     string  `json:"@odata.nextLink"`
@@ -351,22 +482,9 @@ func convertMicrosoftTodoData(todoData []*project) (vikunjsStructure []*models.P
 			}
 
 			// Repeating - convert to RRULE format
-			if t.Recurrence != nil && t.Recurrence.Pattern != nil {
+			if rruleStr := convertMicrosoftRecurrence(t.Recurrence); rruleStr != "" {
 				log.Debugf("[Microsoft Todo Migration] Converting recurring pattern for task %s", t.ID)
-				interval := t.Recurrence.Pattern.Interval
-				if interval < 1 {
-					interval = 1
-				}
-				switch t.Recurrence.Pattern.Type {
-				case "daily":
-					task.Repeats = fmt.Sprintf("FREQ=DAILY;INTERVAL=%d", interval)
-				case "weekly":
-					task.Repeats = fmt.Sprintf("FREQ=WEEKLY;INTERVAL=%d", interval)
-				case "monthly":
-					task.Repeats = fmt.Sprintf("FREQ=MONTHLY;INTERVAL=%d", interval)
-				case "yearly":
-					task.Repeats = fmt.Sprintf("FREQ=YEARLY;INTERVAL=%d", interval)
-				}
+				task.Repeats = rruleStr
 			}
 
 			project.Tasks = append(project.Tasks, &models.TaskWithComments{Task: *task})

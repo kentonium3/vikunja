@@ -25,7 +25,45 @@ import (
 	"github.com/d4l3k/messagediff"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/teambition/rrule-go"
 )
+
+func TestConvertMicrosoftRecurrence(t *testing.T) {
+	cases := []struct {
+		name string
+		rec  *recurrence
+		want string
+	}{
+		{"nil recurrence", nil, ""},
+		{"nil pattern", &recurrence{}, ""},
+		{"daily", &recurrence{Pattern: &pattern{Type: "daily", Interval: 1}}, "FREQ=DAILY;INTERVAL=1"},
+		{"daily every 3", &recurrence{Pattern: &pattern{Type: "daily", Interval: 3}}, "FREQ=DAILY;INTERVAL=3"},
+		{"interval defaults to 1", &recurrence{Pattern: &pattern{Type: "daily", Interval: 0}}, "FREQ=DAILY;INTERVAL=1"},
+		{"weekly with days", &recurrence{Pattern: &pattern{Type: "weekly", Interval: 1, DaysOfWeek: []string{"monday", "friday"}}}, "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,FR"},
+		{"weekly no days", &recurrence{Pattern: &pattern{Type: "weekly", Interval: 2}}, "FREQ=WEEKLY;INTERVAL=2"},
+		{"absolute monthly", &recurrence{Pattern: &pattern{Type: "absoluteMonthly", Interval: 1, DayOfMonth: 15}}, "FREQ=MONTHLY;INTERVAL=1;BYMONTHDAY=15"},
+		{"relative monthly", &recurrence{Pattern: &pattern{Type: "relativeMonthly", Interval: 1, DaysOfWeek: []string{"tuesday"}, Index: "second"}}, "FREQ=MONTHLY;INTERVAL=1;BYDAY=TU;BYSETPOS=2"},
+		{"relative monthly last", &recurrence{Pattern: &pattern{Type: "relativeMonthly", Interval: 1, DaysOfWeek: []string{"friday"}, Index: "last"}}, "FREQ=MONTHLY;INTERVAL=1;BYDAY=FR;BYSETPOS=-1"},
+		{"absolute yearly", &recurrence{Pattern: &pattern{Type: "absoluteYearly", Interval: 1, Month: 3, DayOfMonth: 14}}, "FREQ=YEARLY;INTERVAL=1;BYMONTH=3;BYMONTHDAY=14"},
+		{"relative yearly", &recurrence{Pattern: &pattern{Type: "relativeYearly", Interval: 1, Month: 11, DaysOfWeek: []string{"thursday"}, Index: "fourth"}}, "FREQ=YEARLY;INTERVAL=1;BYMONTH=11;BYDAY=TH;BYSETPOS=4"},
+		{"legacy monthly alias", &recurrence{Pattern: &pattern{Type: "monthly", Interval: 1}}, "FREQ=MONTHLY;INTERVAL=1"},
+		{"legacy yearly alias", &recurrence{Pattern: &pattern{Type: "yearly", Interval: 1}}, "FREQ=YEARLY;INTERVAL=1"},
+		{"range end date", &recurrence{Pattern: &pattern{Type: "daily", Interval: 1}, Range: &taskRange{Type: "endDate", EndDate: "2026-12-31"}}, "FREQ=DAILY;INTERVAL=1;UNTIL=20261231T000000Z"},
+		{"range numbered", &recurrence{Pattern: &pattern{Type: "daily", Interval: 1}, Range: &taskRange{Type: "numbered", NumberOfOccurrences: 5}}, "FREQ=DAILY;INTERVAL=1;COUNT=5"},
+		{"range noEnd ignored", &recurrence{Pattern: &pattern{Type: "daily", Interval: 1}, Range: &taskRange{Type: "noEnd"}}, "FREQ=DAILY;INTERVAL=1"},
+		{"unknown type", &recurrence{Pattern: &pattern{Type: "somethingelse", Interval: 1}}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := convertMicrosoftRecurrence(c.rec)
+			assert.Equal(t, c.want, got)
+			if got != "" {
+				_, err := rrule.StrToROption(got)
+				assert.NoError(t, err, "generated RRULE should be parseable")
+			}
+		})
+	}
+}
 
 func TestConverting(t *testing.T) {
 
