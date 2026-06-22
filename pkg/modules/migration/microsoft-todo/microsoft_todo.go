@@ -133,13 +133,15 @@ func microsoftIndexToSetPos(index string) int {
 }
 
 // microsoftDateToUntil converts a Microsoft Graph date (yyyy-MM-dd) to an RRULE
-// UNTIL value (UTC date-time). Returns "" if the date can't be parsed.
+// UNTIL value. Microsoft's end date is date-only and inclusive, so we anchor UNTIL
+// at the end of that day (UTC) to keep occurrences happening later on the final
+// date. Returns "" if the date can't be parsed.
 func microsoftDateToUntil(date string) string {
 	t, err := time.Parse("2006-01-02", date)
 	if err != nil {
 		return ""
 	}
-	return t.UTC().Format("20060102T150405") + "Z"
+	return t.UTC().Format("20060102") + "T235959Z"
 }
 
 // convertMicrosoftRecurrence converts a Microsoft To Do recurrence into an RFC

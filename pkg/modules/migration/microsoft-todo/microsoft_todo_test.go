@@ -48,7 +48,7 @@ func TestConvertMicrosoftRecurrence(t *testing.T) {
 		{"relative yearly", &recurrence{Pattern: &pattern{Type: "relativeYearly", Interval: 1, Month: 11, DaysOfWeek: []string{"thursday"}, Index: "fourth"}}, "FREQ=YEARLY;INTERVAL=1;BYMONTH=11;BYDAY=TH;BYSETPOS=4"},
 		{"legacy monthly alias", &recurrence{Pattern: &pattern{Type: "monthly", Interval: 1}}, "FREQ=MONTHLY;INTERVAL=1"},
 		{"legacy yearly alias", &recurrence{Pattern: &pattern{Type: "yearly", Interval: 1}}, "FREQ=YEARLY;INTERVAL=1"},
-		{"range end date", &recurrence{Pattern: &pattern{Type: "daily", Interval: 1}, Range: &taskRange{Type: "endDate", EndDate: "2026-12-31"}}, "FREQ=DAILY;INTERVAL=1;UNTIL=20261231T000000Z"},
+		{"range end date", &recurrence{Pattern: &pattern{Type: "daily", Interval: 1}, Range: &taskRange{Type: "endDate", EndDate: "2026-12-31"}}, "FREQ=DAILY;INTERVAL=1;UNTIL=20261231T235959Z"},
 		{"range numbered", &recurrence{Pattern: &pattern{Type: "daily", Interval: 1}, Range: &taskRange{Type: "numbered", NumberOfOccurrences: 5}}, "FREQ=DAILY;INTERVAL=1;COUNT=5"},
 		{"range noEnd ignored", &recurrence{Pattern: &pattern{Type: "daily", Interval: 1}, Range: &taskRange{Type: "noEnd"}}, "FREQ=DAILY;INTERVAL=1"},
 		{"unknown type", &recurrence{Pattern: &pattern{Type: "somethingelse", Interval: 1}}, ""},
