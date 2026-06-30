@@ -190,10 +190,9 @@ func normalizeTickTickRepeat(repeat string) string {
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line != "" {
-			// Remove RRULE: prefix if present (TickTick may or may not include it)
+			// Remove RRULE: prefix if present (TickTick may or may not include it, in any case)
 			if strings.HasPrefix(strings.ToUpper(line), "RRULE:") {
-				line = strings.TrimPrefix(line, "RRULE:")
-				line = strings.TrimPrefix(line, "rrule:")
+				line = line[len("RRULE:"):]
 			}
 			if _, err := rrule.StrToRRule(line); err != nil {
 				return ""
