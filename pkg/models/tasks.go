@@ -82,10 +82,6 @@ type Task struct {
 	Repeat *TaskRepeat `xorm:"-" json:"repeat,omitempty" doc:"The recurrence, as RFC 5545 RRULE parts. When the task has a due date, it is the first occurrence. Completing the task moves its dates to the next occurrence and reopens it. Send null to remove the recurrence. A partial update (PATCH) leaves an omitted repeat unchanged; a full update (PUT) replaces every field, so an omitted repeat removes it too. The whole rule, written out as RRULE text, must fit in 500 characters."`
 	// If true, the next occurrence is calculated from the completion date rather than the original due date.
 	RepeatsFromCurrentDate bool `xorm:"null default false" json:"repeats_from_current_date" doc:"When true, the next occurrence is counted from the moment the task is completed instead of from its previous due date."`
-	// The due date's intended local time of day, in seconds after local midnight, when a completion
-	// moved it off that time because of a spring-forward gap; nil otherwise. Only completion
-	// writes it, a due-date edit clears it, and it is never exposed.
-	IntendedDueTime *int `xorm:"int null 'intended_due_time'" json:"-"`
 	// The task priority. Can be anything you want, it is possible to sort by this later.
 	Priority int64 `xorm:"bigint null" json:"priority"`
 	// When this task starts.
@@ -177,6 +173,10 @@ type Task struct {
 	// never against the creation policy. Unexported: no API payload, import file or column can
 	// set it.
 	copiesStoredRule bool
+
+	// RepeatsText is the v2 API's repeats_rrule as sent: nil when the field was absent, ""
+	// to clear. Never stored or serialised; resolveV2Repeat maps it onto the write path.
+	RepeatsText *string `xorm:"-" json:"-"`
 }
 
 type TaskWithComments struct {
@@ -186,11 +186,6 @@ type TaskWithComments struct {
 	// structured repeat cannot always express. TaskWithComments is never
 	// an API response, so this changes no API shape.
 	RepeatsRRule string `xorm:"-" json:"repeats_rrule,omitempty"`
-	// IntendedDueTime is export/import-only: the due date's intended clock time after a
-	// spring-forward gap shift, in seconds after local midnight, so a round trip keeps it. The
-	// embedded Task.IntendedDueTime is not serialised, so this is the only copy in the file; a
-	// pointer keeps a real 0 (midnight). TaskWithComments is never an API response.
-	IntendedDueTime *int `xorm:"-" json:"intended_due_time,omitempty"`
 }
 
 // TableName returns the table name for tasks
@@ -1306,6 +1301,75 @@ func (t *Task) Update(s *xorm.Session, a web.Auth) (err error) {
 	return t.updateSingleTask(s, a, nil)
 }
 
+// InitialDueWrite says which write an initial_due_time arrives on: the stored task is loaded only
+// for an update. A create body may carry any id (createTasks discards it), so the id cannot decide.
+type InitialDueWrite int
+
+const (
+	// InitialDueCreate is a task create (v2 tasks-create).
+	InitialDueCreate InitialDueWrite = iota
+	// InitialDueUpdate is a task update (v2 tasks-update, and PATCH through it).
+	InitialDueUpdate
+)
+
+// SelectInitialDue is the write path's first-occurrence selection (IC-03): it turns a v2 write's
+// initial_due_time into task.DueDate before the write runs, in the write's own session, so
+// createTasks and Task.Update see the chosen date as if the client had sent it (FR-008).
+//
+// task is the write's input after any PATCH merge. On an update the stored task is loaded the way
+// Task.Update loads it, and an omitted ProjectID is taken from it, so the zone is the stored
+// project's; a move resolves the target project's. The rule searched is the one the write will
+// store, decided by resolveCreateRepeat or resolveUpdateRepeat, which the write then runs again
+// to the same result; a rule the write would refuse is refused here with the same error. The
+// conflicts (InitialDueConflict on the merged due date, rule and done) are 400 with code 2002.
+//
+// With a date, task.DueDate is set and source is generated. Without one, task.DueDate stays zero
+// and reason says why. now is the operation's one sampled clock (EngineNow); this function reads
+// no clock, opens no session and never commits.
+func SelectInitialDue(s *xorm.Session, a web.Auth, task *Task, initialDueTime string, now time.Time, write InitialDueWrite) (source, reason string, err error) {
+	hour, minute, err := ParseInitialDueTime(initialDueTime)
+	if err != nil {
+		return "", "", err
+	}
+
+	projectID := task.ProjectID
+	var decision repeatDecision
+	if write == InitialDueUpdate {
+		// Same locked read as updateSingleTask, which then re-reads the row it now holds.
+		stored, err := GetTaskSimple(lockingSession(s), &Task{ID: task.ID})
+		if err != nil {
+			return "", "", err
+		}
+		if projectID == 0 {
+			projectID = stored.ProjectID
+		}
+		decision, err = resolveUpdateRepeat(stored.Repeats, task)
+		if err != nil {
+			return "", "", err
+		}
+	} else {
+		decision, err = resolveCreateRepeat(task)
+		if err != nil {
+			return "", "", err
+		}
+	}
+
+	if err := InitialDueConflict(!task.DueDate.IsZero(), initialDueTime, decision.Repeats != "", task.Done); err != nil {
+		var conflict ErrInitialDueConflict
+		if errors.As(err, &conflict) {
+			return "", "", conflict.WriteError()
+		}
+		return "", "", err
+	}
+
+	due, noDate := selectInitialDue(decision.Repeats, hour, minute, resolveTaskZone(s, a, projectID), now)
+	if due.IsZero() {
+		return "", string(noDate), nil
+	}
+	task.DueDate = due
+	return DueDateSourceGenerated, "", nil
+}
+
 //nolint:gocyclo
 func (t *Task) updateSingleTask(s *xorm.Session, a web.Auth, fields []string) (err error) {
 
@@ -1361,8 +1425,9 @@ func (t *Task) updateSingleTask(s *xorm.Session, a web.Auth, fields []string) (e
 		}
 		cols := []string{}
 		for _, f := range fields {
-			// `repeat` is the public field name for the RRULE; the stored column is `repeats`.
-			if f == "repeat" {
+			// `repeat` and `repeats_rrule` (v2) are the public field names for the RRULE; the
+			// stored column is `repeats`.
+			if f == "repeat" || f == "repeats_rrule" {
 				f = "repeats"
 			}
 			if !allowed[f] && !relationFields[f] {
@@ -1432,7 +1497,7 @@ func (t *Task) updateSingleTask(s *xorm.Session, a web.Auth, fields []string) (e
 	// Recurrence write rules. A field-masked update whose mask excludes
 	// recurrence keeps the stored rule, copied above, and never re-validates it.
 	if len(fields) == 0 || fieldSet["repeats"] {
-		decision, err := resolveIncomingRepeat(ot.Repeats, t.Repeat, t.Repeats)
+		decision, err := resolveUpdateRepeat(ot.Repeats, t)
 		if err != nil {
 			return err
 		}
@@ -1568,16 +1633,6 @@ func (t *Task) updateSingleTask(s *xorm.Session, a web.Auth, fields []string) (e
 		completedFrom.RepeatsFromCurrentDate = t.RepeatsFromCurrentDate
 	}
 
-	// intended_due_time is never read from the incoming task: JSON cannot set it, and a
-	// read-modify copy may carry a stale one. Completion steps from the stored value, and a
-	// refused completion keeps it.
-	var storedIntended *int
-	if ot.IntendedDueTime != nil {
-		v := *ot.IntendedDueTime // a copy: the merge below may write through ot's pointer
-		storedIntended = &v
-	}
-	t.IntendedDueTime = ot.IntendedDueTime
-
 	// Captured before updateDone reopens the completed repeating task below.
 	repeatingCompleted := completedFrom.isRepeating() && !ot.Done && t.Done
 	preRepeatDueDate, preRepeatStartDate, preRepeatEndDate := t.DueDate, t.StartDate, t.EndDate
@@ -1590,13 +1645,6 @@ func (t *Task) updateSingleTask(s *xorm.Session, a web.Auth, fields []string) (e
 		zone = resolveTaskZone(s, a, t.ProjectID)
 	}
 	updateDoneAt := updateDone(&completedFrom, t, zone)
-	// A completion that moved the dates stores the helper's intent. Any other write, a refused
-	// completion included, keeps the stored one unless it changes the due date: the gap
-	// check cannot tell an edit from a gap shift within its bound, so an edit must clear it.
-	movedCompletion := repeatingCompleted && !t.Done
-	if !movedCompletion && !preRepeatDueDate.Equal(ot.DueDate) {
-		t.IntendedDueTime = nil
-	}
 	if clearsRule {
 		t.Repeats = ""
 		t.Repeat = nil
@@ -1702,12 +1750,6 @@ func (t *Task) updateSingleTask(s *xorm.Session, a web.Auth, fields []string) (e
 
 	if err := mergo.Merge(&ot, t, mergo.WithOverride); err != nil {
 		return err
-	}
-	// mergo skips a nil source, so the decided value is set explicitly, and written only when it
-	// changed (neither the field list nor the default columns name it).
-	ot.IntendedDueTime = t.IntendedDueTime
-	if !equalIntPtr(storedIntended, ot.IntendedDueTime) {
-		colsToUpdate = append(colsToUpdate, "intended_due_time")
 	}
 
 	//////
@@ -2157,9 +2199,6 @@ func setTaskDatesRRule(oldTask, newTask *Task, now time.Time, zone *time.Locatio
 	if !applyNextOccurrence(oldTask, newTask, absolute, res, zone) {
 		return
 	}
-	// Only a completion that moved the dates writes the intent; every refusal above leaves the
-	// caller's value (the stored one) in place, like the dates.
-	newTask.IntendedDueTime = intendedDueTimeColumn(res.Due.Intended)
 
 	// Decrement the remaining COUNT so finite (COUNT) recurrences actually
 	// terminate. The DTSTART reset re-bases the rule's count window to the
@@ -2170,9 +2209,8 @@ func setTaskDatesRRule(oldTask, newTask *Task, now time.Time, zone *time.Locatio
 	// text byte-identical (resolveIncomingRepeat's equal-echo rule), and so does a stale
 	// client echoing the higher COUNT it read before the decrement (isStaleCount).
 	// nextOccurrence parsed the same text, so this parse cannot fail.
-	if opt, err := rrule.StrToROption(oldTask.Repeats); err == nil && opt.Count > 1 {
-		opt.Count--
-		newTask.Repeats = opt.RRuleString()
+	if next, ok := decrementedRule(oldTask.Repeats); ok {
+		newTask.Repeats = next
 	}
 
 	newTask.Done = false
@@ -2187,7 +2225,7 @@ func completionInput(oldTask *Task, absolute []*TaskReminder, now time.Time, zon
 	}
 	return nextOccurrenceInput{
 		Rule:           oldTask.Repeats,
-		Due:            datedValue{At: oldTask.DueDate, Intended: storedIntendedDueTime(oldTask)},
+		Due:            datedValue{At: oldTask.DueDate},
 		Start:          datedValue{At: oldTask.StartDate},
 		End:            datedValue{At: oldTask.EndDate},
 		Reminders:      reminders,
@@ -2196,38 +2234,6 @@ func completionInput(oldTask *Task, absolute []*TaskReminder, now time.Time, zon
 		Zone:           zone,
 		TaskID:         oldTask.ID,
 	}
-}
-
-// storedIntendedDueTime is the task's stored intended_due_time as the due date's intended local
-// time of day, or nil. A value outside 0 to 86399 seconds cannot be a time of day and is ignored.
-func storedIntendedDueTime(task *Task) *time.Duration {
-	if task.IntendedDueTime == nil {
-		return nil
-	}
-	secs := *task.IntendedDueTime
-	if secs < 0 || secs >= 24*60*60 {
-		log.Debugf("Task %d: ignoring its stored intended_due_time %d, which is not a time of day", task.ID, secs)
-		return nil
-	}
-	d := time.Duration(secs) * time.Second
-	return &d
-}
-
-// intendedDueTimeColumn is the intended_due_time to store for a due date's intended local time
-// of day: whole seconds, or nil for NULL.
-func intendedDueTimeColumn(d *time.Duration) *int {
-	if d == nil {
-		return nil
-	}
-	secs := int(*d / time.Second)
-	return &secs
-}
-
-func equalIntPtr(a, b *int) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return *a == *b
 }
 
 // applyNextOccurrence writes a successful nextOccurrence result onto newTask, where completion has

@@ -30,6 +30,8 @@ type repeatDecision struct {
 // stored: the rule currently stored ("" on create).
 // incoming: the API's structured repeat (nil when absent or null).
 // incomingRaw: an RRULE string set directly by a trusted caller (CalDAV, duplication, import), else "".
+// The v2 API's rule text (repeats_rrule) arrives through resolveV2Repeat, which passes it as
+// incomingRaw only when it changed and passed ValidateRuleText, in its canonical form.
 //
 // The rules, in order:
 //  0. incomingRaw equal to stored keeps it, without re-validation: a stored rule a later policy
@@ -54,7 +56,7 @@ func resolveIncomingRepeat(stored string, incoming *TaskRepeat, incomingRaw stri
 			return repeatDecision{}, err
 		}
 		if incoming != nil && !repeatsEqual(incoming, taskRepeatFromRRule(incomingRaw)) {
-			return repeatDecision{}, ErrInvalidData{Message: "The structured repeat and the RRULE text disagree; set only one of them."}
+			return repeatDecision{}, ErrInvalidData{Message: "The structured repeat (repeat) and the rule text (repeats_rrule) disagree; set only one of them."}
 		}
 		return repeatDecision{Repeats: incomingRaw}, nil
 	}
@@ -70,7 +72,7 @@ func resolveIncomingRepeat(stored string, incoming *TaskRepeat, incomingRaw stri
 			}
 			if projection.ReadOnly {
 				return repeatDecision{}, ErrInvalidData{Message: "This task's recurrence rule has parts the structured repeat cannot represent, " +
-					"so it cannot be edited here. It can be removed (send repeat: null) or replaced over CalDAV."}
+					"so it cannot be edited here. It can be removed (send repeat: null) or replaced with repeats_rrule (v2) or over CalDAV."}
 			}
 		}
 	}
@@ -140,12 +142,36 @@ func isStaleRawCount(stored, incoming string) bool {
 
 // resolveCreateRepeat decides the stored rule for a task being created: a rule copied from
 // another task's stored rule (copiesStoredRule) skips the creation policy, everything else goes
-// through resolveIncomingRepeat.
+// through resolveIncomingRepeat, after resolveV2Repeat maps any v2 rule text.
 func resolveCreateRepeat(t *Task) (repeatDecision, error) {
 	if t.copiesStoredRule {
 		return resolveCopiedRepeat(t.Repeats)
 	}
-	return resolveIncomingRepeat("", t.Repeat, t.Repeats)
+	incoming, raw, err := resolveV2Repeat("", t.Repeat, t.Repeats, t.RepeatsText)
+	if err != nil {
+		return repeatDecision{}, err
+	}
+	return resolveIncomingRepeat("", incoming, raw)
+}
+
+// resolveUpdateRepeat is resolveIncomingRepeat for an update, after mapping the v2 rule text.
+func resolveUpdateRepeat(stored string, t *Task) (repeatDecision, error) {
+	incoming, raw, err := resolveV2Repeat(stored, t.Repeat, t.Repeats, t.RepeatsText)
+	if err != nil {
+		return repeatDecision{}, err
+	}
+	return resolveIncomingRepeat(stored, incoming, raw)
+}
+
+// decrementedRule is rule after one completion: COUNT lowered by one when it is above 1.
+// ok is false when nothing changed (no COUNT above 1, or rule does not parse).
+func decrementedRule(rule string) (next string, ok bool) {
+	opt, err := rrule.StrToROption(rule)
+	if err != nil || opt.Count <= 1 {
+		return "", false
+	}
+	opt.Count--
+	return opt.RRuleString(), true
 }
 
 // resolveCopiedRepeat decides the stored rule for a task copied from another task's stored rule

@@ -19,8 +19,12 @@ package models
 import (
 	"testing"
 
+	"code.vikunja.io/api/pkg/db"
+	"code.vikunja.io/api/pkg/user"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"xorm.io/xorm"
 )
 
 // TestResolveIncomingRepeat pins the write rules for a task's recurrence. Masked updates never
@@ -34,7 +38,7 @@ func TestResolveIncomingRepeat(t *testing.T) {
 		// Barred by rrulePolicyRejects: sub-daily with a BY* part.
 		rejected = "FREQ=HOURLY;BYHOUR=9"
 	)
-	readOnlyEdit := "can be removed (send repeat: null) or replaced over CalDAV"
+	readOnlyEdit := "can be removed (send repeat: null) or replaced with repeats_rrule (v2) or over CalDAV"
 
 	cases := []struct {
 		name        string
@@ -305,4 +309,326 @@ func TestResolveIncomingRepeat(t *testing.T) {
 		assert.Contains(t, msg, "repeat: null")
 		assert.Contains(t, msg, "CalDAV")
 	})
+}
+
+// TestTaskRepeatRuleTextWrites pins the v2 rule text (Task.RepeatsText) through the real Create
+// and Update paths. Each "kept" case is paired with a "replaced" case on the same fixture.
+func TestTaskRepeatRuleTextWrites(t *testing.T) {
+	u := &user.User{ID: 1}
+	const (
+		easter = "FREQ=YEARLY;BYEASTER=1"
+		// Non-canonical part order, so keeping it proves the text is byte-identical.
+		easterReordered = "BYEASTER=1;FREQ=YEARLY"
+		weekly          = "FREQ=WEEKLY;BYDAY=MO"
+	)
+
+	// readWithText reads the fixture task as a v2 client would see it: the structured
+	// projection plus the stored text as repeats_rrule (WP04 fills it from the read).
+	readWithText := func(t *testing.T, s *xorm.Session) *Task {
+		t.Helper()
+		upd := readForEcho(t, s, u)
+		upd.RepeatsText = strPtr(storedRepeats(t, s, repeatingFixtureTask))
+		return upd
+	}
+
+	t.Run("create with text stores the canonical rule and a read-only projection", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+
+		task := &Task{Title: "easter", ProjectID: 1, RepeatsText: strPtr("rrule:freq=yearly;byeaster=1")}
+		require.NoError(t, task.Create(s, u))
+
+		assert.Equal(t, easter, storedRepeats(t, s, task.ID))
+		require.NotNil(t, task.Repeat, "the response carries the projection")
+		assert.True(t, task.Repeat.ReadOnly)
+	})
+	t.Run("create with refused text fails and stores nothing", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+
+		task := &Task{Title: "bad", ProjectID: 1, RepeatsText: strPtr("FREQ=DAILY;COUNT=5;UNTIL=20271231T235959Z")}
+		err := task.Create(s, u)
+		require.Error(t, err)
+		require.True(t, IsErrInvalidData(err), "got %v", err)
+		assert.Contains(t, err.(ErrInvalidData).Message, "COUNT and UNTIL cannot both be set")
+		assert.Zero(t, task.ID)
+	})
+	t.Run("create with empty text and a structured repeat stores the repeat", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+
+		task := &Task{Title: "structured", ProjectID: 1, Repeat: &TaskRepeat{Freq: "daily", Interval: 2}, RepeatsText: strPtr("")}
+		require.NoError(t, task.Create(s, u))
+		assert.Equal(t, "FREQ=DAILY;INTERVAL=2", storedRepeats(t, s, task.ID))
+	})
+
+	t.Run("text echo with repeat nil clears (the frontend clear shape)", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+		storeRepeats(t, s, easterReordered)
+
+		upd := readWithText(t, s)
+		upd.Repeat = nil
+		require.NoError(t, upd.Update(s, u))
+
+		assert.Empty(t, storedRepeats(t, s, repeatingFixtureTask))
+	})
+	t.Run("text echo with the projection keeps the rule byte-identical (a PATCH title edit)", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+		storeRepeats(t, s, easterReordered)
+
+		upd := readWithText(t, s)
+		require.NotNil(t, upd.Repeat)
+		upd.Title = "renamed"
+		require.NoError(t, upd.Update(s, u))
+
+		assert.Equal(t, easterReordered, storedRepeats(t, s, repeatingFixtureTask))
+	})
+	t.Run("changed text with the old read-only projection replaces the rule (FR-016)", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+		storeRepeats(t, s, easterReordered)
+
+		upd := readWithText(t, s)
+		require.True(t, upd.Repeat.ReadOnly)
+		upd.RepeatsText = strPtr("FREQ=YEARLY;BYEASTER=2")
+		require.NoError(t, upd.Update(s, u))
+
+		assert.Equal(t, "FREQ=YEARLY;BYEASTER=2", storedRepeats(t, s, repeatingFixtureTask))
+	})
+	t.Run("changed text with the old projection replaces the rule (a PATCH text edit)", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+		storeRepeats(t, s, weekly)
+
+		upd := readWithText(t, s)
+		upd.RepeatsText = strPtr("FREQ=WEEKLY;BYDAY=TU")
+		require.NoError(t, upd.Update(s, u))
+
+		assert.Equal(t, "FREQ=WEEKLY;BYDAY=TU", storedRepeats(t, s, repeatingFixtureTask))
+	})
+	t.Run("empty text with repeat nil clears", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+		storeRepeats(t, s, weekly)
+
+		upd := readWithText(t, s)
+		upd.Repeat = nil
+		upd.RepeatsText = strPtr("")
+		require.NoError(t, upd.Update(s, u))
+
+		assert.Empty(t, storedRepeats(t, s, repeatingFixtureTask))
+	})
+	t.Run("empty text with the echoed projection clears", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+		storeRepeats(t, s, weekly)
+
+		upd := readWithText(t, s)
+		upd.RepeatsText = strPtr("")
+		require.NoError(t, upd.Update(s, u))
+
+		assert.Empty(t, storedRepeats(t, s, repeatingFixtureTask))
+	})
+	t.Run("empty text with a changed repeat is refused", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+		storeRepeats(t, s, weekly)
+
+		upd := readWithText(t, s)
+		upd.Repeat = &TaskRepeat{Freq: "daily", Interval: 1}
+		upd.RepeatsText = strPtr("")
+		err := upd.Update(s, u)
+		require.Error(t, err)
+		require.True(t, IsErrInvalidData(err), "got %v", err)
+		assert.Contains(t, err.(ErrInvalidData).Message, "repeats_rrule clears the recurrence but repeat changes it")
+		assert.Equal(t, weekly, storedRepeats(t, s, repeatingFixtureTask))
+	})
+	t.Run("changed text with a disagreeing changed repeat is refused", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+		storeRepeats(t, s, weekly)
+
+		upd := readWithText(t, s)
+		upd.Repeat = &TaskRepeat{Freq: "daily", Interval: 1}
+		upd.RepeatsText = strPtr("FREQ=WEEKLY;BYDAY=TU")
+		err := upd.Update(s, u)
+		require.Error(t, err)
+		require.True(t, IsErrInvalidData(err), "got %v", err)
+		assert.Equal(t, "The structured repeat (repeat) and the rule text (repeats_rrule) disagree; set only one of them.", err.(ErrInvalidData).Message)
+		assert.Equal(t, weekly, storedRepeats(t, s, repeatingFixtureTask))
+	})
+	t.Run("changed text with an agreeing changed repeat stores the text", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+		storeRepeats(t, s, weekly)
+
+		upd := readWithText(t, s)
+		upd.Repeat = &TaskRepeat{Freq: "weekly", Interval: 1, ByDay: []string{"tu"}}
+		upd.RepeatsText = strPtr("FREQ=WEEKLY;BYDAY=TU")
+		require.NoError(t, upd.Update(s, u))
+		assert.Equal(t, "FREQ=WEEKLY;BYDAY=TU", storedRepeats(t, s, repeatingFixtureTask))
+	})
+	t.Run("refused text fails with 2002 and leaves the stored rule", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+		storeRepeats(t, s, weekly)
+
+		upd := readWithText(t, s)
+		upd.RepeatsText = strPtr("FREQ=DAILY;UNTIL=20271231")
+		err := upd.Update(s, u)
+		require.Error(t, err)
+		require.True(t, IsErrInvalidData(err), "got %v", err)
+		assert.Equal(t, ErrCodeInvalidData, err.(ErrInvalidData).HTTPError().Code)
+		assert.Equal(t, weekly, storedRepeats(t, s, repeatingFixtureTask))
+	})
+
+	// Review cycle 1: text ValidateRuleText refuses is never read as a respelled echo, whatever
+	// repeat says. Each stored rule is spelled non-canonically, so a kept echo (byte-identical)
+	// is told apart from a replacement (the canonical spelling).
+	invalidEchoes := []struct {
+		name, stored, invalid, respelled, wantErr string
+	}{
+		{
+			name:      "floating UNTIL",
+			stored:    "UNTIL=20271231T235959Z;FREQ=DAILY",
+			invalid:   "FREQ=DAILY;UNTIL=20271231T235959",
+			respelled: "freq=daily;until=20271231t235959z",
+			wantErr:   "must be a UTC date-time",
+		},
+		{
+			name:      "COUNT=0",
+			stored:    "INTERVAL=1;FREQ=DAILY",
+			invalid:   "INTERVAL=1;FREQ=DAILY;COUNT=0",
+			respelled: "freq=daily;interval=1",
+			wantErr:   "COUNT 0 must be a positive integer",
+		},
+	}
+	for _, c := range invalidEchoes {
+		for _, nilRepeat := range []bool{false, true} {
+			shape := "an echoed repeat"
+			if nilRepeat {
+				shape = "a nil repeat"
+			}
+			t.Run(c.name+" with "+shape+" is refused with 2002", func(t *testing.T) {
+				db.LoadAndAssertFixtures(t)
+				s := db.NewSession()
+				defer s.Close()
+				storeRepeats(t, s, c.stored)
+
+				upd := readWithText(t, s)
+				require.NotNil(t, upd.Repeat)
+				if nilRepeat {
+					upd.Repeat = nil
+				}
+				upd.RepeatsText = strPtr(c.invalid)
+				err := upd.Update(s, u)
+				require.Error(t, err)
+				require.True(t, IsErrInvalidData(err), "got %v", err)
+				assert.Equal(t, ErrCodeInvalidData, err.(ErrInvalidData).HTTPError().Code)
+				assert.Contains(t, err.(ErrInvalidData).Message, c.wantErr)
+				assert.Equal(t, c.stored, storedRepeats(t, s, repeatingFixtureTask))
+			})
+			t.Run(c.name+": the valid respelling with "+shape+" is still an echo", func(t *testing.T) {
+				db.LoadAndAssertFixtures(t)
+				s := db.NewSession()
+				defer s.Close()
+				storeRepeats(t, s, c.stored)
+
+				upd := readWithText(t, s)
+				require.NotNil(t, upd.Repeat)
+				if nilRepeat {
+					upd.Repeat = nil
+				}
+				upd.RepeatsText = strPtr(c.respelled)
+				require.NoError(t, upd.Update(s, u))
+				if nilRepeat {
+					// An echo hands the decision to repeat, and a nil repeat clears; changed
+					// text would have stored the rule instead.
+					assert.Empty(t, storedRepeats(t, s, repeatingFixtureTask))
+				} else {
+					assert.Equal(t, c.stored, storedRepeats(t, s, repeatingFixtureTask), "kept byte-identical")
+				}
+			})
+		}
+	}
+
+	t.Run("no text with a raw rule (the CalDAV shape) behaves as before", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+		storeRepeats(t, s, weekly)
+
+		// The raw rule from a CalDAV client replaces the stored one ...
+		upd := &Task{ID: repeatingFixtureTask, Title: "caldav", Repeats: "INTERVAL=2;FREQ=DAILY"}
+		require.NoError(t, upd.Update(s, u))
+		assert.Equal(t, "INTERVAL=2;FREQ=DAILY", storedRepeats(t, s, repeatingFixtureTask), "stored verbatim")
+
+		// ... and the same raw rule sent again keeps it.
+		upd = &Task{ID: repeatingFixtureTask, Title: "caldav again", Repeats: "INTERVAL=2;FREQ=DAILY"}
+		require.NoError(t, upd.Update(s, u))
+		assert.Equal(t, "INTERVAL=2;FREQ=DAILY", storedRepeats(t, s, repeatingFixtureTask))
+	})
+
+	t.Run("a bulk update leaves the stored text alone", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+		storeRepeats(t, s, easterReordered)
+
+		_, err := updateTasks(s, u, &Task{Title: "bulk renamed"}, []int64{repeatingFixtureTask}, []string{"title"})
+		require.NoError(t, err)
+		assert.Equal(t, easterReordered, storedRepeats(t, s, repeatingFixtureTask))
+	})
+	t.Run("a mask naming repeats_rrule applies the text to the repeats column", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+		storeRepeats(t, s, weekly)
+
+		upd := &Task{ID: repeatingFixtureTask, RepeatsText: strPtr("FREQ=DAILY;INTERVAL=3")}
+		require.NoError(t, upd.updateSingleTask(s, u, []string{"repeats_rrule"}))
+		assert.Equal(t, "FREQ=DAILY;INTERVAL=3", storedRepeats(t, s, repeatingFixtureTask))
+	})
+	t.Run("a mask excluding recurrence ignores the text", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+		storeRepeats(t, s, weekly)
+
+		upd := &Task{ID: repeatingFixtureTask, Title: "renamed only", RepeatsText: strPtr("FREQ=DAILY;INTERVAL=3")}
+		require.NoError(t, upd.updateSingleTask(s, u, []string{"title"}))
+		assert.Equal(t, weekly, storedRepeats(t, s, repeatingFixtureTask))
+	})
+}
+
+// TestDecrementedRule pins the COUNT decrement completion applies (setTaskDatesRRule) and the
+// occurrence query reuses.
+func TestDecrementedRule(t *testing.T) {
+	next, ok := decrementedRule("FREQ=DAILY;INTERVAL=1;COUNT=3")
+	assert.True(t, ok)
+	assert.Equal(t, "FREQ=DAILY;INTERVAL=1;COUNT=2", next)
+
+	next, ok = decrementedRule("COUNT=2;FREQ=WEEKLY")
+	assert.True(t, ok)
+	assert.Equal(t, "FREQ=WEEKLY;COUNT=1", next, "serialised canonically, as completion stores it")
+
+	for _, rule := range []string{"FREQ=DAILY;COUNT=1", "FREQ=DAILY", "", "not a rule"} {
+		_, ok := decrementedRule(rule)
+		assert.False(t, ok, rule)
+	}
 }
