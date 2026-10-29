@@ -60,7 +60,7 @@ type TaskRepeat struct {
 	Wkst string `json:"wkst,omitempty" doc:"The day a week starts on, which matters for weekly rules with an interval above 1 and by_day, and for by_week_no: mo (the default, omitted in responses), tu, we, th, fr, sa or su. Any case is accepted."`
 	// True when the stored rule has parts this structured view cannot hold (for example BYEASTER or
 	// DTSTART from a CalDAV client). Such a rule can be removed but not edited through the API.
-	ReadOnly bool `json:"read_only,omitempty" readOnly:"true" doc:"Response only; ignored on write. True when the stored recurrence rule has parts this structured form cannot represent, such as BYEASTER or a DTSTART set by a CalDAV client. Such a rule can be removed (send repeat: null) but not edited through the API."`
+	ReadOnly bool `json:"read_only,omitempty" readOnly:"true" doc:"Response only; ignored on write. True when the stored recurrence rule has parts this structured form cannot represent, such as BYEASTER or a DTSTART set by a CalDAV client. Such a rule cannot be edited through the structured form; it can be replaced or cleared through repeats_rrule on v2, or removed with repeat: null."`
 }
 
 var freqToString = map[rrule.Frequency]string{
