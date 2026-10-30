@@ -27,9 +27,9 @@ import (
 
 	"code.vikunja.io/api/pkg/config"
 
+	"github.com/kentonium3/rrule-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/teambition/rrule-go"
 )
 
 // nextOccurrenceNow is the reference "now" of these tests, a Thursday.

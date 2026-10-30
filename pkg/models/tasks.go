@@ -40,7 +40,7 @@ import (
 	"github.com/google/uuid"
 	clone "github.com/huandu/go-clone/generic"
 	"github.com/jinzhu/copier"
-	"github.com/teambition/rrule-go"
+	"github.com/kentonium3/rrule-go"
 	"xorm.io/builder"
 	"xorm.io/xorm"
 	"xorm.io/xorm/schemas"
@@ -173,6 +173,10 @@ type Task struct {
 	// never against the creation policy. Unexported: no API payload, import file or column can
 	// set it.
 	copiesStoredRule bool
+
+	// RepeatsText is the v2 API's repeats_rrule as sent: nil when the field was absent, ""
+	// to clear. Never stored or serialised; resolveV2Repeat maps it onto the write path.
+	RepeatsText *string `xorm:"-" json:"-"`
 }
 
 type TaskWithComments struct {
@@ -1297,6 +1301,75 @@ func (t *Task) Update(s *xorm.Session, a web.Auth) (err error) {
 	return t.updateSingleTask(s, a, nil)
 }
 
+// InitialDueWrite says which write an initial_due_time arrives on: the stored task is loaded only
+// for an update. A create body may carry any id (createTasks discards it), so the id cannot decide.
+type InitialDueWrite int
+
+const (
+	// InitialDueCreate is a task create (v2 tasks-create).
+	InitialDueCreate InitialDueWrite = iota
+	// InitialDueUpdate is a task update (v2 tasks-update, and PATCH through it).
+	InitialDueUpdate
+)
+
+// SelectInitialDue is the write path's first-occurrence selection (IC-03): it turns a v2 write's
+// initial_due_time into task.DueDate before the write runs, in the write's own session, so
+// createTasks and Task.Update see the chosen date as if the client had sent it (FR-008).
+//
+// task is the write's input after any PATCH merge. On an update the stored task is loaded the way
+// Task.Update loads it, and an omitted ProjectID is taken from it, so the zone is the stored
+// project's; a move resolves the target project's. The rule searched is the one the write will
+// store, decided by resolveCreateRepeat or resolveUpdateRepeat, which the write then runs again
+// to the same result; a rule the write would refuse is refused here with the same error. The
+// conflicts (InitialDueConflict on the merged due date, rule and done) are 400 with code 2002.
+//
+// With a date, task.DueDate is set and source is generated. Without one, task.DueDate stays zero
+// and reason says why. now is the operation's one sampled clock (EngineNow); this function reads
+// no clock, opens no session and never commits.
+func SelectInitialDue(s *xorm.Session, a web.Auth, task *Task, initialDueTime string, now time.Time, write InitialDueWrite) (source, reason string, err error) {
+	hour, minute, err := ParseInitialDueTime(initialDueTime)
+	if err != nil {
+		return "", "", err
+	}
+
+	projectID := task.ProjectID
+	var decision repeatDecision
+	if write == InitialDueUpdate {
+		// Same locked read as updateSingleTask, which then re-reads the row it now holds.
+		stored, err := GetTaskSimple(lockingSession(s), &Task{ID: task.ID})
+		if err != nil {
+			return "", "", err
+		}
+		if projectID == 0 {
+			projectID = stored.ProjectID
+		}
+		decision, err = resolveUpdateRepeat(stored.Repeats, task)
+		if err != nil {
+			return "", "", err
+		}
+	} else {
+		decision, err = resolveCreateRepeat(task)
+		if err != nil {
+			return "", "", err
+		}
+	}
+
+	if err := InitialDueConflict(!task.DueDate.IsZero(), initialDueTime, decision.Repeats != "", task.Done); err != nil {
+		var conflict ErrInitialDueConflict
+		if errors.As(err, &conflict) {
+			return "", "", conflict.WriteError()
+		}
+		return "", "", err
+	}
+
+	due, noDate := selectInitialDue(decision.Repeats, hour, minute, resolveTaskZone(s, a, projectID), now)
+	if due.IsZero() {
+		return "", string(noDate), nil
+	}
+	task.DueDate = due
+	return DueDateSourceGenerated, "", nil
+}
+
 //nolint:gocyclo
 func (t *Task) updateSingleTask(s *xorm.Session, a web.Auth, fields []string) (err error) {
 
@@ -1352,8 +1425,9 @@ func (t *Task) updateSingleTask(s *xorm.Session, a web.Auth, fields []string) (e
 		}
 		cols := []string{}
 		for _, f := range fields {
-			// `repeat` is the public field name for the RRULE; the stored column is `repeats`.
-			if f == "repeat" {
+			// `repeat` and `repeats_rrule` (v2) are the public field names for the RRULE; the
+			// stored column is `repeats`.
+			if f == "repeat" || f == "repeats_rrule" {
 				f = "repeats"
 			}
 			if !allowed[f] && !relationFields[f] {
@@ -1423,7 +1497,7 @@ func (t *Task) updateSingleTask(s *xorm.Session, a web.Auth, fields []string) (e
 	// Recurrence write rules. A field-masked update whose mask excludes
 	// recurrence keeps the stored rule, copied above, and never re-validates it.
 	if len(fields) == 0 || fieldSet["repeats"] {
-		decision, err := resolveIncomingRepeat(ot.Repeats, t.Repeat, t.Repeats)
+		decision, err := resolveUpdateRepeat(ot.Repeats, t)
 		if err != nil {
 			return err
 		}
@@ -1918,7 +1992,7 @@ func validateRRuleSyntax(rruleStr string) (*rrule.ROption, error) {
 	if len(rruleStr) > maxRRuleLength {
 		return nil, ErrInvalidData{Message: fmt.Sprintf("Invalid RRULE: the rule is %d characters long; at most %d characters are allowed", len(rruleStr), maxRRuleLength)}
 	}
-	opt, err := rrule.StrToROption(rruleStr)
+	opt, err := parseRuleText(rruleStr)
 	if err != nil {
 		return nil, ErrInvalidData{Message: "Invalid RRULE: " + err.Error()}
 	}
@@ -2135,9 +2209,8 @@ func setTaskDatesRRule(oldTask, newTask *Task, now time.Time, zone *time.Locatio
 	// text byte-identical (resolveIncomingRepeat's equal-echo rule), and so does a stale
 	// client echoing the higher COUNT it read before the decrement (isStaleCount).
 	// nextOccurrence parsed the same text, so this parse cannot fail.
-	if opt, err := rrule.StrToROption(oldTask.Repeats); err == nil && opt.Count > 1 {
-		opt.Count--
-		newTask.Repeats = opt.RRuleString()
+	if next, ok := decrementedRule(oldTask.Repeats); ok {
+		newTask.Repeats = next
 	}
 
 	newTask.Done = false

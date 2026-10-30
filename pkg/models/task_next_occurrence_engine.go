@@ -20,7 +20,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/teambition/rrule-go"
+	"github.com/kentonium3/rrule-go"
 )
 
 // The wall-clock engine behind nextOccurrence.
@@ -125,8 +125,11 @@ type recurrence struct {
 	// stepsDueDate: this recurrence steps a due date, so an occurrence whose wall clock does not
 	// exist in the zone is skipped (RFC 5545 §3.3.10). Set once in newRecurrence.
 	stepsDueDate bool
-	now          time.Time // in zone
-	zone         *time.Location
+	// initialSearch: this recurrence chooses a new task's first due date from a seed
+	// (newInitialSearch), not a completion's next one. Set once, never with a stored anchor.
+	initialSearch bool
+	now           time.Time // in zone
+	zone          *time.Location
 }
 
 // occurrence is a moved (or reference) date: its instant, and the floating value it stands for,
@@ -165,6 +168,26 @@ func newRecurrence(in nextOccurrenceInput, opt *rrule.ROption, bounded rrule.ROp
 	return r, nil
 }
 
+// Shim (C-003): core-local nominal-phase initial search. Delete when rrule-go L3 provides a
+// gap-aware nominal-phase search.
+//
+// newInitialSearch is the recurrence of a first-occurrence search (selectInitialDue): the rule is
+// an evaluation copy without COUNT, the anchor is a floating seed that plays DTSTART, and every
+// family, sub-daily plain rules included, is iterated on the floating timeline from it
+// (nextIterated), so the seed is a candidate when it is an instance. A candidate whose wall clock
+// does not exist is skipped like a generated due date, never shifted: a gap seed keeps its nominal
+// phase (New York 2023-03-12 02:30 MINUTELY;INTERVAL=15 gives 03:00, then 03:15). It is a mode of
+// the one engine, not a second evaluator; completion never sets it.
+func newInitialSearch(in nextOccurrenceInput, opt *rrule.ROption, bounded rrule.ROption) (*recurrence, error) {
+	r, err := newRecurrence(in, opt, bounded)
+	if err != nil {
+		return nil, err
+	}
+	r.initialSearch = true
+	r.stepsDueDate = true
+	return r, nil
+}
+
 func (r *recurrence) float(t time.Time) time.Time    { return float(t, r.zone) }
 func (r *recurrence) localise(f time.Time) time.Time { return localise(f, r.zone) }
 
@@ -187,6 +210,11 @@ func (r *recurrence) skips(exists bool) bool { return r.stepsDueDate && !exists 
 // When the due date is stepped, a wallclock occurrence whose wall clock does not exist in the zone
 // is skipped and never ranked (RFC 5545 §3.3.10); elapsed rules never meet one.
 func (r *recurrence) next(anchorF, anchorAt, from time.Time, clamp bool) (occurrence, bool) {
+	if r.initialSearch {
+		// One path for every rule: the seed as DTSTART, included when it is an instance (plain
+		// stepping would exclude it), no clamp, no elapsed stepping (newInitialSearch).
+		return r.nextIterated(anchorF, from)
+	}
 	if r.family == familyElapsed {
 		at := r.nextElapsed(anchorAt, from)
 		return occurrence{at: at, f: r.float(at)}, !at.IsZero()

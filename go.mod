@@ -60,6 +60,7 @@ require (
 	github.com/jaswdr/faker/v2 v2.9.1
 	github.com/jinzhu/copier v0.4.0
 	github.com/jszwedko/go-datemath v0.1.1-0.20230526204004-640a500621d6
+	github.com/kentonium3/rrule-go v1.9.0
 	github.com/labstack/echo-jwt/v5 v5.0.2
 	github.com/labstack/echo/v5 v5.3.1
 	github.com/lib/pq v1.12.3
@@ -80,7 +81,6 @@ require (
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.12.1
 	github.com/swaggo/swag v1.16.6
-	github.com/teambition/rrule-go v1.8.2
 	github.com/tkuchiki/go-timezone v0.2.3
 	github.com/traefik/yaegi v0.16.1
 	github.com/ulule/limiter/v3 v3.11.2
@@ -229,5 +229,3 @@ tool (
 )
 
 replace github.com/samedi/caldav-go => github.com/go-vikunja/caldav-go v3.0.1-0.20260914150516-75a300de4623+incompatible
-
-replace github.com/teambition/rrule-go => github.com/kentonium3/rrule-go v1.8.3

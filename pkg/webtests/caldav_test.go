@@ -30,10 +30,10 @@ import (
 	"code.vikunja.io/api/pkg/routes/caldav"
 
 	ics "github.com/arran4/golang-ical"
+	"github.com/kentonium3/rrule-go"
 	"github.com/labstack/echo/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/teambition/rrule-go"
 )
 
 func TestCaldav(t *testing.T) {

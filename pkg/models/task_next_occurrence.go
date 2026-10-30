@@ -21,7 +21,7 @@ import (
 
 	"code.vikunja.io/api/pkg/log"
 
-	"github.com/teambition/rrule-go"
+	"github.com/kentonium3/rrule-go"
 )
 
 // noNextReason says why nextOccurrence moved nothing. The strings are stable: other code and
@@ -97,7 +97,7 @@ func checkNextOccurrenceGuards(in nextOccurrenceInput) (opt *rrule.ROption, boun
 		return nil, bounded, reasonNoRule
 	}
 
-	opt, err := rrule.StrToROption(in.Rule)
+	opt, err := parseRuleText(in.Rule)
 	if err != nil {
 		log.Errorf("Failed to parse RRULE '%s' for task %d: %v", in.Rule, in.TaskID, err)
 		return nil, bounded, reasonInvalidRule

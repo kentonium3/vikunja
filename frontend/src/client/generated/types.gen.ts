@@ -1126,6 +1126,21 @@ export type MigrationStartedBodyBody = {
     readonly message?: string;
 };
 
+export type OccurrenceAnswer = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    /**
+     * Due dates in ascending order, at most count.
+     */
+    occurrences: Array<string> | null;
+    /**
+     * Present only when fewer than count dates come back. One of count_exhausted, until_passed, no_rule, no_due_date, task_done, no_occurrence, invalid_rule, interval_beyond_horizon, anchor_beyond_horizon, outside_bounds, policy_rejected, rule_too_long, evaluation_failed, outside_storable_range, no_zone.
+     */
+    reason?: string;
+};
+
 export type OpenIdAuthInfo = {
     enabled?: boolean;
     providers?: Array<Provider> | null;
@@ -1453,6 +1468,80 @@ export type PasswordTokenRequest = {
      */
     readonly $schema?: string;
     email?: string;
+};
+
+export type PreviewAnswer = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    /**
+     * The anchor: the due_date sent (explicit) or the one initial_due_time selected (generated). Absent when there is none.
+     */
+    due_date?: string;
+    /**
+     * explicit when due_date was sent; generated when initial_due_time selected it. Absent without a due_date.
+     */
+    due_date_source?: 'explicit' | 'generated';
+    /**
+     * The request time the answer was computed at, to the second. For audit only.
+     */
+    evaluated_at: string;
+    /**
+     * Due dates in ascending order, strictly after due_date, at most count.
+     */
+    occurrences: Array<string> | null;
+    /**
+     * Present only when fewer than count dates come back: either no due date could be selected (due_date is then absent), or the list after due_date ended early (count_exhausted, for example, beside a valid due_date). One of count_exhausted, until_passed, no_rule, no_due_date, task_done, no_occurrence, invalid_rule, interval_beyond_horizon, anchor_beyond_horizon, outside_bounds, policy_rejected, rule_too_long, evaluation_failed, outside_storable_range, no_zone.
+     */
+    reason?: string;
+    /**
+     * The IANA name of the time zone the preview was evaluated in.
+     */
+    timezone: string;
+};
+
+export type PreviewInput = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    /**
+     * How many occurrences to return, 1 to 100. Defaults to 10.
+     */
+    count?: number;
+    /**
+     * The anchor: the due date the rule starts from. Send exactly one of due_date and initial_due_time.
+     */
+    due_date?: string;
+    /**
+     * HH:MM, 00:00 to 23:59: preview the due date creating the task with this initial_due_time would select, the first occurrence strictly after now from today at this time in the effective zone. Send exactly one of due_date and initial_due_time.
+     */
+    initial_due_time?: string;
+    /**
+     * Zone context only: evaluate in the zone of this project, as a task created in it would be. Needs read access to the project; a saved filter (negative id) is refused. Not with task_id.
+     */
+    project_id?: number;
+    /**
+     * Structured recurrence, as on a task. Send exactly one of repeat and repeats_rrule.
+     */
+    repeat?: TaskRepeat;
+    /**
+     * Same meaning as on a task: when true, the next occurrence is counted from the moment the task is completed instead of from its previous due date.
+     */
+    repeats_from_current_date?: boolean;
+    /**
+     * RFC 5545 rule text, as on a task (see the task's repeats_rrule). Send exactly one of repeat and repeats_rrule. An empty value is refused here (400, code 2002), unlike on a task write, where it clears the rule.
+     */
+    repeats_rrule?: string;
+    /**
+     * Zone context only: evaluate in the zone of this task's project. Needs read access to the task. Not with project_id.
+     */
+    task_id?: number;
+    /**
+     * IANA time zone name, such as Europe/Berlin. Without it, the caller's time zone is used, then the server's. An unknown name is refused with code 2003.
+     */
+    timezone?: string;
 };
 
 export type PreviewResult = {
@@ -2097,10 +2186,6 @@ export type Totp = {
 
 export type Task = {
     /**
-     * A URL to the JSON Schema for this object.
-     */
-    readonly $schema?: string;
-    /**
      * The users assigned to this task. Read-only here; use the task-assignee endpoints to change assignments.
      */
     readonly assignees?: Array<User> | null;
@@ -2391,6 +2476,148 @@ export type TaskCommentReadBody = {
     readonly updated?: string;
 };
 
+export type TaskCreateBody = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    /**
+     * The users assigned to this task. Read-only here; use the task-assignee endpoints to change assignments.
+     */
+    readonly assignees?: Array<User> | null;
+    /**
+     * The task's attachments. Read-only here; use the attachment endpoints to add or remove them.
+     */
+    readonly attachments?: Array<TaskAttachment> | null;
+    /**
+     * The bucket the task is in. Only populated when the task is accessed via a view with buckets. To move a task between buckets, the new bucket must be in the same view as the old one.
+     */
+    bucket_id?: number;
+    /**
+     * The task's buckets across all views. Only present when requested via the buckets expand option.
+     */
+    readonly buckets?: Array<Bucket> | null;
+    /**
+     * The number of comments on this task. Only present when requested via the comment_count expand option.
+     */
+    readonly comment_count?: number;
+    /**
+     * The task's first 50 comments. Only present when requested via the comments expand option.
+     */
+    readonly comments?: Array<TaskComment> | null;
+    /**
+     * The id of the attachment used as this task's cover image, or 0 for none.
+     */
+    cover_image_attachment_id?: number;
+    /**
+     * When this task was created. Set by the server; ignored on write.
+     */
+    readonly created?: string;
+    /**
+     * The user who created this task. Set by the server.
+     */
+    readonly created_by?: User;
+    /**
+     * When this task was soft-deleted. Soft-deleted tasks are kept for 30 days before they are removed permanently.
+     */
+    readonly deleted_at?: string;
+    description?: string;
+    done?: boolean;
+    /**
+     * When the task was marked as done. Set by the server; ignored on write.
+     */
+    readonly done_at?: string;
+    due_date?: string;
+    end_date?: string;
+    /**
+     * The task color as a hex string without the leading '#'.
+     */
+    hex_color?: string;
+    /**
+     * The unique, numeric id of this task.
+     */
+    readonly id?: number;
+    /**
+     * The textual task identifier, derived from the project identifier and the task index (e.g. "PROJ-12").
+     */
+    readonly identifier?: string;
+    /**
+     * The per-project task index, assigned by the server.
+     */
+    readonly index?: number;
+    /**
+     * Whether the requesting user has favorited this task. Per-user, so it differs between callers.
+     */
+    is_favorite?: boolean;
+    /**
+     * Whether the task is unread for the requesting user. Only present when requested via the is_unread expand option.
+     */
+    readonly is_unread?: boolean;
+    /**
+     * The labels on this task. Read-only here; use the label-task endpoints to add or remove labels.
+     */
+    readonly labels?: Array<Label> | null;
+    /**
+     * How far the task is from done, between 0 and 1.
+     */
+    percent_done?: number;
+    /**
+     * The task's position, saved per view. Only non-zero when the task is fetched through a view endpoint; use the task-position endpoint to change it.
+     */
+    readonly position?: number;
+    /**
+     * The task's stored position in each view of its project. Only present in create and duplicate responses.
+     */
+    readonly positions?: Array<TaskPosition> | null;
+    priority?: number;
+    /**
+     * The id of the project this task belongs to. On create it is taken from the URL; on update, setting it to a different project moves the task (requires write access to the target project).
+     */
+    project_id?: number;
+    /**
+     * Reactions on this task. Only present when requested via the reactions expand option.
+     */
+    readonly reactions?: {
+        [key: string]: Array<User> | null;
+    };
+    /**
+     * Related tasks grouped by relation kind. Read-only here; use the task-relation endpoints to change relations.
+     */
+    readonly related_tasks?: {
+        [key: string]: Array<Task> | null;
+    };
+    reminders?: Array<TaskReminder> | null;
+    /**
+     * The recurrence, as RFC 5545 RRULE parts. When the task has a due date, it is the first occurrence. Completing the task moves its dates to the next occurrence and reopens it. Send null to remove the recurrence. A partial update (PATCH) leaves an omitted repeat unchanged; a full update (PUT) replaces every field, so an omitted repeat removes it too. The whole rule, written out as RRULE text, must fit in 500 characters.
+     */
+    repeat?: TaskRepeat;
+    /**
+     * When true, the next occurrence is counted from the moment the task is completed instead of from its previous due date.
+     */
+    repeats_from_current_date?: boolean;
+    /**
+     * The task's recurrence as RFC 5545 RRULE text (without DTSTART), e.g. FREQ=WEEKLY;BYDAY=MO. Any RFC 5545 rule part is accepted, plus BYEASTER as a documented extension. UNTIL must be a UTC date-time (ending in Z). On read, the stored rule exactly; absent when the task does not repeat. On write, whichever of repeat and repeats_rrule differs from the stored rule is the change; sending both changed and disagreeing is refused. An empty string clears the recurrence; null is treated as absent. Unchanged text (as a PATCH echoes it) is ignored and repeat decides, exactly as without this field: on PUT, omitting repeat clears the rule. A higher COUNT on otherwise unchanged text counts as unchanged, as for repeat, so COUNT cannot be raised through this field alone. Only single-task reads, create and update carry this field; list and bulk endpoints do not.
+     */
+    repeats_rrule?: string | null;
+    start_date?: string;
+    /**
+     * The requesting user's subscription to this task. Read-only here; use the subscription endpoints to change it. Only present when reading a single task.
+     */
+    readonly subscription?: Subscription;
+    /**
+     * The number of time entries on this task. Only present when requested via the time_entries_count expand option.
+     */
+    readonly time_entries_count?: number;
+    /**
+     * The task title. This is what you'll see in the project.
+     */
+    title?: string;
+    /**
+     * When this task was last updated. Set by the server; ignored on write.
+     */
+    readonly updated?: string;
+};
+
 export type TaskDuplicate = {
     /**
      * A URL to the JSON Schema for this object.
@@ -2555,6 +2782,10 @@ export type TaskReadOneBody = {
      * When true, the next occurrence is counted from the moment the task is completed instead of from its previous due date.
      */
     repeats_from_current_date?: boolean;
+    /**
+     * The task's recurrence as RFC 5545 RRULE text (without DTSTART), e.g. FREQ=WEEKLY;BYDAY=MO. Any RFC 5545 rule part is accepted, plus BYEASTER as a documented extension. UNTIL must be a UTC date-time (ending in Z). On read, the stored rule exactly; absent when the task does not repeat. On write, whichever of repeat and repeats_rrule differs from the stored rule is the change; sending both changed and disagreeing is refused. An empty string clears the recurrence; null is treated as absent. Unchanged text (as a PATCH echoes it) is ignored and repeat decides, exactly as without this field: on PUT, omitting repeat clears the rule. A higher COUNT on otherwise unchanged text counts as unchanged, as for repeat, so COUNT cannot be raised through this field alone. Only single-task reads, create and update carry this field; list and bulk endpoints do not.
+     */
+    repeats_rrule?: string | null;
     start_date?: string;
     /**
      * The requesting user's subscription to this task. Read-only here; use the subscription endpoints to change it. Only present when reading a single task.
@@ -2657,7 +2888,7 @@ export type TaskRepeat = {
      */
     interval?: number;
     /**
-     * Response only; ignored on write. True when the stored recurrence rule has parts this structured form cannot represent, such as BYEASTER or a DTSTART set by a CalDAV client. Such a rule can be removed (send repeat: null) but not edited through the API.
+     * Response only; ignored on write. True when the stored recurrence rule has parts this structured form cannot represent, such as BYEASTER or a DTSTART set by a CalDAV client. Such a rule cannot be edited through the structured form; it can be replaced or cleared through repeats_rrule on v2, or removed with repeat: null.
      */
     readonly read_only?: boolean;
     /**
@@ -2668,6 +2899,156 @@ export type TaskRepeat = {
      * The day a week starts on, which matters for weekly rules with an interval above 1 and by_day, and for by_week_no: mo (the default, omitted in responses), tu, we, th, fr, sa or su. Any case is accepted.
      */
     wkst?: string;
+};
+
+export type TaskWriteBody = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    /**
+     * The users assigned to this task. Read-only here; use the task-assignee endpoints to change assignments.
+     */
+    readonly assignees?: Array<User> | null;
+    /**
+     * The task's attachments. Read-only here; use the attachment endpoints to add or remove them.
+     */
+    readonly attachments?: Array<TaskAttachment> | null;
+    /**
+     * The bucket the task is in. Only populated when the task is accessed via a view with buckets. To move a task between buckets, the new bucket must be in the same view as the old one.
+     */
+    bucket_id?: number;
+    /**
+     * The task's buckets across all views. Only present when requested via the buckets expand option.
+     */
+    readonly buckets?: Array<Bucket> | null;
+    /**
+     * The number of comments on this task. Only present when requested via the comment_count expand option.
+     */
+    readonly comment_count?: number;
+    /**
+     * The task's first 50 comments. Only present when requested via the comments expand option.
+     */
+    readonly comments?: Array<TaskComment> | null;
+    /**
+     * The id of the attachment used as this task's cover image, or 0 for none.
+     */
+    cover_image_attachment_id?: number;
+    /**
+     * When this task was created. Set by the server; ignored on write.
+     */
+    readonly created?: string;
+    /**
+     * The user who created this task. Set by the server.
+     */
+    readonly created_by?: User;
+    /**
+     * When this task was soft-deleted. Soft-deleted tasks are kept for 30 days before they are removed permanently.
+     */
+    readonly deleted_at?: string;
+    description?: string;
+    done?: boolean;
+    /**
+     * When the task was marked as done. Set by the server; ignored on write.
+     */
+    readonly done_at?: string;
+    due_date?: string;
+    /**
+     * Where the stored due_date came from: generated when this write chose it from initial_due_time, explicit for any other due date (sent by the client or already stored). Absent when the task has no due date.
+     */
+    readonly due_date_source?: 'explicit' | 'generated';
+    end_date?: string;
+    /**
+     * The task color as a hex string without the leading '#'.
+     */
+    hex_color?: string;
+    /**
+     * The unique, numeric id of this task.
+     */
+    readonly id?: number;
+    /**
+     * The textual task identifier, derived from the project identifier and the task index (e.g. "PROJ-12").
+     */
+    readonly identifier?: string;
+    /**
+     * The per-project task index, assigned by the server.
+     */
+    readonly index?: number;
+    /**
+     * Whether the requesting user has favorited this task. Per-user, so it differs between callers.
+     */
+    is_favorite?: boolean;
+    /**
+     * Whether the task is unread for the requesting user. Only present when requested via the is_unread expand option.
+     */
+    readonly is_unread?: boolean;
+    /**
+     * The labels on this task. Read-only here; use the label-task endpoints to add or remove labels.
+     */
+    readonly labels?: Array<Label> | null;
+    /**
+     * How far the task is from done, between 0 and 1.
+     */
+    percent_done?: number;
+    /**
+     * The task's position, saved per view. Only non-zero when the task is fetched through a view endpoint; use the task-position endpoint to change it.
+     */
+    readonly position?: number;
+    /**
+     * The task's stored position in each view of its project. Only present in create and duplicate responses.
+     */
+    readonly positions?: Array<TaskPosition> | null;
+    priority?: number;
+    /**
+     * The id of the project this task belongs to. On create it is taken from the URL; on update, setting it to a different project moves the task (requires write access to the target project).
+     */
+    project_id?: number;
+    /**
+     * Reactions on this task. Only present when requested via the reactions expand option.
+     */
+    readonly reactions?: {
+        [key: string]: Array<User> | null;
+    };
+    /**
+     * Why initial_due_time chose no due date, in the next-occurrence vocabulary, for example until_passed (the rule's UNTIL is before now) or no_occurrence (no instance between now and UNTIL or in the search window). Present only then; the task is saved without a due date.
+     */
+    readonly reason?: string;
+    /**
+     * Related tasks grouped by relation kind. Read-only here; use the task-relation endpoints to change relations.
+     */
+    readonly related_tasks?: {
+        [key: string]: Array<Task> | null;
+    };
+    reminders?: Array<TaskReminder> | null;
+    /**
+     * The recurrence, as RFC 5545 RRULE parts. When the task has a due date, it is the first occurrence. Completing the task moves its dates to the next occurrence and reopens it. Send null to remove the recurrence. A partial update (PATCH) leaves an omitted repeat unchanged; a full update (PUT) replaces every field, so an omitted repeat removes it too. The whole rule, written out as RRULE text, must fit in 500 characters.
+     */
+    repeat?: TaskRepeat;
+    /**
+     * When true, the next occurrence is counted from the moment the task is completed instead of from its previous due date.
+     */
+    repeats_from_current_date?: boolean;
+    /**
+     * The task's recurrence as RFC 5545 RRULE text (without DTSTART), e.g. FREQ=WEEKLY;BYDAY=MO. Any RFC 5545 rule part is accepted, plus BYEASTER as a documented extension. UNTIL must be a UTC date-time (ending in Z). On read, the stored rule exactly; absent when the task does not repeat. On write, whichever of repeat and repeats_rrule differs from the stored rule is the change; sending both changed and disagreeing is refused. An empty string clears the recurrence; null is treated as absent. Unchanged text (as a PATCH echoes it) is ignored and repeat decides, exactly as without this field: on PUT, omitting repeat clears the rule. A higher COUNT on otherwise unchanged text counts as unchanged, as for repeat, so COUNT cannot be raised through this field alone. Only single-task reads, create and update carry this field; list and bulk endpoints do not.
+     */
+    repeats_rrule?: string | null;
+    start_date?: string;
+    /**
+     * The requesting user's subscription to this task. Read-only here; use the subscription endpoints to change it. Only present when reading a single task.
+     */
+    readonly subscription?: Subscription;
+    /**
+     * The number of time entries on this task. Only present when requested via the time_entries_count expand option.
+     */
+    readonly time_entries_count?: number;
+    /**
+     * The task title. This is what you'll see in the project.
+     */
+    title?: string;
+    /**
+     * When this task was last updated. Set by the server; ignored on write.
+     */
+    readonly updated?: string;
 };
 
 export type Team = {
@@ -4095,6 +4476,17 @@ export type MigrationMigrateBodyWritable = {
     state?: string;
 };
 
+export type OccurrenceAnswerWritable = {
+    /**
+     * Due dates in ascending order, at most count.
+     */
+    occurrences: Array<string> | null;
+    /**
+     * Present only when fewer than count dates come back. One of count_exhausted, until_passed, no_rule, no_due_date, task_done, no_occurrence, invalid_rule, interval_beyond_horizon, anchor_beyond_horizon, outside_bounds, policy_rejected, rule_too_long, evaluation_failed, outside_storable_range, no_zone.
+     */
+    reason?: string;
+};
+
 export type OverviewWritable = {
     [key: string]: never;
 };
@@ -4290,6 +4682,72 @@ export type PasswordResetWritable = {
 
 export type PasswordTokenRequestWritable = {
     email?: string;
+};
+
+export type PreviewAnswerWritable = {
+    /**
+     * The anchor: the due_date sent (explicit) or the one initial_due_time selected (generated). Absent when there is none.
+     */
+    due_date?: string;
+    /**
+     * explicit when due_date was sent; generated when initial_due_time selected it. Absent without a due_date.
+     */
+    due_date_source?: 'explicit' | 'generated';
+    /**
+     * The request time the answer was computed at, to the second. For audit only.
+     */
+    evaluated_at: string;
+    /**
+     * Due dates in ascending order, strictly after due_date, at most count.
+     */
+    occurrences: Array<string> | null;
+    /**
+     * Present only when fewer than count dates come back: either no due date could be selected (due_date is then absent), or the list after due_date ended early (count_exhausted, for example, beside a valid due_date). One of count_exhausted, until_passed, no_rule, no_due_date, task_done, no_occurrence, invalid_rule, interval_beyond_horizon, anchor_beyond_horizon, outside_bounds, policy_rejected, rule_too_long, evaluation_failed, outside_storable_range, no_zone.
+     */
+    reason?: string;
+    /**
+     * The IANA name of the time zone the preview was evaluated in.
+     */
+    timezone: string;
+};
+
+export type PreviewInputWritable = {
+    /**
+     * How many occurrences to return, 1 to 100. Defaults to 10.
+     */
+    count?: number;
+    /**
+     * The anchor: the due date the rule starts from. Send exactly one of due_date and initial_due_time.
+     */
+    due_date?: string;
+    /**
+     * HH:MM, 00:00 to 23:59: preview the due date creating the task with this initial_due_time would select, the first occurrence strictly after now from today at this time in the effective zone. Send exactly one of due_date and initial_due_time.
+     */
+    initial_due_time?: string;
+    /**
+     * Zone context only: evaluate in the zone of this project, as a task created in it would be. Needs read access to the project; a saved filter (negative id) is refused. Not with task_id.
+     */
+    project_id?: number;
+    /**
+     * Structured recurrence, as on a task. Send exactly one of repeat and repeats_rrule.
+     */
+    repeat?: TaskRepeatWritable;
+    /**
+     * Same meaning as on a task: when true, the next occurrence is counted from the moment the task is completed instead of from its previous due date.
+     */
+    repeats_from_current_date?: boolean;
+    /**
+     * RFC 5545 rule text, as on a task (see the task's repeats_rrule). Send exactly one of repeat and repeats_rrule. An empty value is refused here (400, code 2002), unlike on a task write, where it clears the rule.
+     */
+    repeats_rrule?: string;
+    /**
+     * Zone context only: evaluate in the zone of this task's project. Needs read access to the task. Not with project_id.
+     */
+    task_id?: number;
+    /**
+     * IANA time zone name, such as Europe/Berlin. Without it, the caller's time zone is used, then the server's. An unknown name is refused with code 2003.
+     */
+    timezone?: string;
 };
 
 export type PreviewResultWritable = {
@@ -4625,6 +5083,60 @@ export type TaskCommentReadBodyWritable = {
     comment?: string;
 };
 
+export type TaskCreateBodyWritable = {
+    /**
+     * The bucket the task is in. Only populated when the task is accessed via a view with buckets. To move a task between buckets, the new bucket must be in the same view as the old one.
+     */
+    bucket_id?: number;
+    /**
+     * The id of the attachment used as this task's cover image, or 0 for none.
+     */
+    cover_image_attachment_id?: number;
+    description?: string;
+    done?: boolean;
+    due_date?: string;
+    end_date?: string;
+    /**
+     * The task color as a hex string without the leading '#'.
+     */
+    hex_color?: string;
+    /**
+     * Time of day, HH:MM in the task's effective zone, to seed the first occurrence of the task's rule when the task has no due date. The server picks the first instance strictly after now and it is stored as due_date. Never stored or returned. Needs a repeat rule after the write (repeat or repeats_rrule, on PATCH including the stored one); refused with 400 when the task has a due date (on PATCH send due_date null to replace one), has no rule, or is done. When no instance exists the task is saved without a due date and the response says why in reason.
+     */
+    initial_due_time?: string;
+    /**
+     * Whether the requesting user has favorited this task. Per-user, so it differs between callers.
+     */
+    is_favorite?: boolean;
+    /**
+     * How far the task is from done, between 0 and 1.
+     */
+    percent_done?: number;
+    priority?: number;
+    /**
+     * The id of the project this task belongs to. On create it is taken from the URL; on update, setting it to a different project moves the task (requires write access to the target project).
+     */
+    project_id?: number;
+    reminders?: Array<TaskReminder> | null;
+    /**
+     * The recurrence, as RFC 5545 RRULE parts. When the task has a due date, it is the first occurrence. Completing the task moves its dates to the next occurrence and reopens it. Send null to remove the recurrence. A partial update (PATCH) leaves an omitted repeat unchanged; a full update (PUT) replaces every field, so an omitted repeat removes it too. The whole rule, written out as RRULE text, must fit in 500 characters.
+     */
+    repeat?: TaskRepeatWritable;
+    /**
+     * When true, the next occurrence is counted from the moment the task is completed instead of from its previous due date.
+     */
+    repeats_from_current_date?: boolean;
+    /**
+     * The task's recurrence as RFC 5545 RRULE text (without DTSTART), e.g. FREQ=WEEKLY;BYDAY=MO. Any RFC 5545 rule part is accepted, plus BYEASTER as a documented extension. UNTIL must be a UTC date-time (ending in Z). On read, the stored rule exactly; absent when the task does not repeat. On write, whichever of repeat and repeats_rrule differs from the stored rule is the change; sending both changed and disagreeing is refused. An empty string clears the recurrence; null is treated as absent. Unchanged text (as a PATCH echoes it) is ignored and repeat decides, exactly as without this field: on PUT, omitting repeat clears the rule. A higher COUNT on otherwise unchanged text counts as unchanged, as for repeat, so COUNT cannot be raised through this field alone. Only single-task reads, create and update carry this field; list and bulk endpoints do not.
+     */
+    repeats_rrule?: string | null;
+    start_date?: string;
+    /**
+     * The task title. This is what you'll see in the project.
+     */
+    title?: string;
+};
+
 export type TaskDuplicateWritable = {
     [key: string]: never;
 };
@@ -4658,6 +5170,10 @@ export type TaskReadOneBodyWritable = {
      */
     hex_color?: string;
     /**
+     * Time of day, HH:MM in the task's effective zone, to seed the first occurrence of the task's rule when the task has no due date. The server picks the first instance strictly after now and it is stored as due_date. Never stored or returned. Needs a repeat rule after the write (repeat or repeats_rrule, on PATCH including the stored one); refused with 400 when the task has a due date (on PATCH send due_date null to replace one), has no rule, or is done. When no instance exists the task is saved without a due date and the response says why in reason.
+     */
+    initial_due_time?: string;
+    /**
      * Whether the requesting user has favorited this task. Per-user, so it differs between callers.
      */
     is_favorite?: boolean;
@@ -4679,6 +5195,10 @@ export type TaskReadOneBodyWritable = {
      * When true, the next occurrence is counted from the moment the task is completed instead of from its previous due date.
      */
     repeats_from_current_date?: boolean;
+    /**
+     * The task's recurrence as RFC 5545 RRULE text (without DTSTART), e.g. FREQ=WEEKLY;BYDAY=MO. Any RFC 5545 rule part is accepted, plus BYEASTER as a documented extension. UNTIL must be a UTC date-time (ending in Z). On read, the stored rule exactly; absent when the task does not repeat. On write, whichever of repeat and repeats_rrule differs from the stored rule is the change; sending both changed and disagreeing is refused. An empty string clears the recurrence; null is treated as absent. Unchanged text (as a PATCH echoes it) is ignored and repeat decides, exactly as without this field: on PUT, omitting repeat clears the rule. A higher COUNT on otherwise unchanged text counts as unchanged, as for repeat, so COUNT cannot be raised through this field alone. Only single-task reads, create and update carry this field; list and bulk endpoints do not.
+     */
+    repeats_rrule?: string | null;
     start_date?: string;
     /**
      * The task title. This is what you'll see in the project.
@@ -4754,6 +5274,56 @@ export type TaskRepeatWritable = {
      * The day a week starts on, which matters for weekly rules with an interval above 1 and by_day, and for by_week_no: mo (the default, omitted in responses), tu, we, th, fr, sa or su. Any case is accepted.
      */
     wkst?: string;
+};
+
+export type TaskWriteBodyWritable = {
+    /**
+     * The bucket the task is in. Only populated when the task is accessed via a view with buckets. To move a task between buckets, the new bucket must be in the same view as the old one.
+     */
+    bucket_id?: number;
+    /**
+     * The id of the attachment used as this task's cover image, or 0 for none.
+     */
+    cover_image_attachment_id?: number;
+    description?: string;
+    done?: boolean;
+    due_date?: string;
+    end_date?: string;
+    /**
+     * The task color as a hex string without the leading '#'.
+     */
+    hex_color?: string;
+    /**
+     * Whether the requesting user has favorited this task. Per-user, so it differs between callers.
+     */
+    is_favorite?: boolean;
+    /**
+     * How far the task is from done, between 0 and 1.
+     */
+    percent_done?: number;
+    priority?: number;
+    /**
+     * The id of the project this task belongs to. On create it is taken from the URL; on update, setting it to a different project moves the task (requires write access to the target project).
+     */
+    project_id?: number;
+    reminders?: Array<TaskReminder> | null;
+    /**
+     * The recurrence, as RFC 5545 RRULE parts. When the task has a due date, it is the first occurrence. Completing the task moves its dates to the next occurrence and reopens it. Send null to remove the recurrence. A partial update (PATCH) leaves an omitted repeat unchanged; a full update (PUT) replaces every field, so an omitted repeat removes it too. The whole rule, written out as RRULE text, must fit in 500 characters.
+     */
+    repeat?: TaskRepeatWritable;
+    /**
+     * When true, the next occurrence is counted from the moment the task is completed instead of from its previous due date.
+     */
+    repeats_from_current_date?: boolean;
+    /**
+     * The task's recurrence as RFC 5545 RRULE text (without DTSTART), e.g. FREQ=WEEKLY;BYDAY=MO. Any RFC 5545 rule part is accepted, plus BYEASTER as a documented extension. UNTIL must be a UTC date-time (ending in Z). On read, the stored rule exactly; absent when the task does not repeat. On write, whichever of repeat and repeats_rrule differs from the stored rule is the change; sending both changed and disagreeing is refused. An empty string clears the recurrence; null is treated as absent. Unchanged text (as a PATCH echoes it) is ignored and repeat decides, exactly as without this field: on PUT, omitting repeat clears the rule. A higher COUNT on otherwise unchanged text counts as unchanged, as for repeat, so COUNT cannot be raised through this field alone. Only single-task reads, create and update carry this field; list and bulk endpoints do not.
+     */
+    repeats_rrule?: string | null;
+    start_date?: string;
+    /**
+     * The task title. This is what you'll see in the project.
+     */
+    title?: string;
 };
 
 export type TeamWritable = {
@@ -7744,7 +8314,7 @@ export type ProjectTasksListResponses = {
 export type ProjectTasksListResponse = ProjectTasksListResponses[keyof ProjectTasksListResponses];
 
 export type TasksCreateData = {
-    body: TaskWritable;
+    body: TaskCreateBodyWritable;
     path: {
         /**
          * The numeric id of the project to create the task in.
@@ -7773,7 +8343,7 @@ export type TasksCreateResponses = {
     /**
      * Created
      */
-    201: Task;
+    201: TaskWriteBody;
 };
 
 export type TasksCreateResponse = TasksCreateResponses[keyof TasksCreateResponses];
@@ -9026,6 +9596,31 @@ export type TasksBulkUpdateResponses = {
 
 export type TasksBulkUpdateResponse = TasksBulkUpdateResponses[keyof TasksBulkUpdateResponses];
 
+export type TasksOccurrencesPreviewData = {
+    body: PreviewInputWritable;
+    path?: never;
+    query?: never;
+    url: '/tasks/occurrences/preview';
+};
+
+export type TasksOccurrencesPreviewErrors = {
+    /**
+     * Error
+     */
+    default: VikunjaErrorModel;
+};
+
+export type TasksOccurrencesPreviewError = TasksOccurrencesPreviewErrors[keyof TasksOccurrencesPreviewErrors];
+
+export type TasksOccurrencesPreviewResponses = {
+    /**
+     * OK
+     */
+    200: PreviewAnswer;
+};
+
+export type TasksOccurrencesPreviewResponse = TasksOccurrencesPreviewResponses[keyof TasksOccurrencesPreviewResponses];
+
 export type TaskTimeEntriesListData = {
     body?: never;
     path: {
@@ -9172,7 +9767,7 @@ export type PatchTasksReadResponses = {
     /**
      * OK
      */
-    200: Task;
+    200: TaskWriteBody;
 };
 
 export type PatchTasksReadResponse = PatchTasksReadResponses[keyof PatchTasksReadResponses];
@@ -9204,7 +9799,7 @@ export type TasksUpdateResponses = {
     /**
      * OK
      */
-    200: Task;
+    200: TaskWriteBody;
 };
 
 export type TasksUpdateResponse = TasksUpdateResponses[keyof TasksUpdateResponses];
@@ -9891,6 +10486,41 @@ export type TaskLabelsDeleteResponses = {
 };
 
 export type TaskLabelsDeleteResponse = TaskLabelsDeleteResponses[keyof TaskLabelsDeleteResponses];
+
+export type TasksOccurrencesData = {
+    body?: never;
+    path: {
+        /**
+         * The numeric id of the task.
+         */
+        task: number;
+    };
+    query?: {
+        /**
+         * How many occurrences to return, 1 to 100. Defaults to 10.
+         */
+        count?: number;
+    };
+    url: '/tasks/{task}/occurrences';
+};
+
+export type TasksOccurrencesErrors = {
+    /**
+     * Error
+     */
+    default: VikunjaErrorModel;
+};
+
+export type TasksOccurrencesError = TasksOccurrencesErrors[keyof TasksOccurrencesErrors];
+
+export type TasksOccurrencesResponses = {
+    /**
+     * OK
+     */
+    200: OccurrenceAnswer;
+};
+
+export type TasksOccurrencesResponse = TasksOccurrencesResponses[keyof TasksOccurrencesResponses];
 
 export type TasksPositionUpdateData = {
     body: TaskPositionWritable;

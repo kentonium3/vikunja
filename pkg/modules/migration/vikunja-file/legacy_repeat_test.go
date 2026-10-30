@@ -27,9 +27,9 @@ import (
 	"code.vikunja.io/api/pkg/config"
 	"code.vikunja.io/api/pkg/models"
 
+	"github.com/kentonium3/rrule-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/teambition/rrule-go"
 )
 
 // legacyRepeatCase is one row of the fixture shared with migration 20261022220000's frozen

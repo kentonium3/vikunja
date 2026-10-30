@@ -966,6 +966,10 @@ func TestNormalizeTickTickRepeat(t *testing.T) {
 		{"RRULE with lowercase prefix", "rrule:FREQ=MONTHLY;INTERVAL=2", "FREQ=MONTHLY;INTERVAL=2"},
 		{"RRULE with mixed-case prefix", "Rrule:FREQ=MONTHLY;INTERVAL=2", "FREQ=MONTHLY;INTERVAL=2"},
 		{"DTSTART line before RRULE", "DTSTART:20190101T090000Z\nRRULE:FREQ=DAILY;INTERVAL=1", "FREQ=DAILY;INTERVAL=1"},
+		// The DTSTART line is skipped, so a TZID start with a floating UNTIL still imports (the
+		// UNTIL read as UTC, #17), although rrule-go v1.9.0 refuses that pair in one text
+		// (an inline DTSTART= in the RRULE line is not skipped; see TestRRuleLibraryCompat_DTSTARTRules).
+		{"TZID DTSTART with floating UNTIL", "DTSTART;TZID=America/New_York:20190101T090000\nRRULE:FREQ=DAILY;UNTIL=20190110T090000", "FREQ=DAILY;UNTIL=20190110T090000Z"},
 		{"multiline takes first", "FREQ=DAILY;INTERVAL=1\nFREQ=WEEKLY;INTERVAL=2", "FREQ=DAILY;INTERVAL=1"},
 		{"multiline with empty first line", "\nFREQ=DAILY;INTERVAL=1", "FREQ=DAILY;INTERVAL=1"},
 		{"RRULE with UNTIL", "FREQ=WEEKLY;INTERVAL=1;UNTIL=20190117T210000Z", "FREQ=WEEKLY;INTERVAL=1;UNTIL=20190117T210000Z"},

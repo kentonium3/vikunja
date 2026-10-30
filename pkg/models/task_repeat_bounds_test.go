@@ -27,9 +27,9 @@ import (
 
 	"code.vikunja.io/api/pkg/config"
 
+	"github.com/kentonium3/rrule-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/teambition/rrule-go"
 )
 
 // zeros returns n copies of "0" joined by commas, the shape of the expansion bomb: rrule-go
