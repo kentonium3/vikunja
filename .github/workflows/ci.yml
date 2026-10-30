@@ -28,7 +28,7 @@ jobs:
 
   release:
     name: Release
-    if: ${{ github.ref_type == 'tag' || github.ref_name == 'main' }}
+    if: (github.ref_type == 'tag' || github.ref_name == 'main') && github.repository == 'go-vikunja/vikunja'
     uses: ./.github/workflows/release.yml
     # Called workflows can only narrow these, never widen them.
     permissions:
@@ -40,3 +40,13 @@ jobs:
     needs:
       - test
     secrets: inherit
+
+  harness-provenance:
+    name: harness-provenance
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Record tested tree
+        run: printf '%s-%s tree=%s sha=%s\n' HARNESS TESTED-TREE "$(git rev-parse 'HEAD^{tree}')" "$(git rev-parse HEAD)"
