@@ -67,6 +67,30 @@ var (
 		";BYMINUTE=" + fullList(0, 12)
 )
 
+// densestSlots counts worstInBudgetMonthly's occurrences from start to end inclusive on the
+// floating calendar without rrule-go: every day, hours 0-23, minutes 0-12, and the second of start
+// (the rule has no BYSECOND, so rrule-go keeps DTSTART's).
+func densestSlots(start, end time.Time) int {
+	const perDay = 24 * 13
+	sec := time.Duration(start.Second()) * time.Second
+	n := 0
+	for day := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC); !day.After(end); day = day.AddDate(0, 0, 1) {
+		if !day.Add(sec).Before(start) && !day.Add(23*time.Hour+12*time.Minute+sec).After(end) {
+			n += perDay
+			continue
+		}
+		for h := 0; h < 24; h++ {
+			for m := 0; m <= 12; m++ {
+				at := day.Add(time.Duration(h)*time.Hour + time.Duration(m)*time.Minute + sec)
+				if !at.Before(start) && !at.After(end) {
+					n++
+				}
+			}
+		}
+	}
+	return n
+}
+
 // bysetposBomb: 429 characters, one occurrence per day, every position
 // impossible, so completion scanned ~2.9M days to the year 9999 (~5 s).
 var bysetposBomb = "FREQ=DAILY;BYSETPOS=" + fullList(2, 130)
@@ -83,6 +107,41 @@ func allocatedBytes(fn func()) uint64 {
 
 // The expansion bomb: about 3 KB of rule text that makes rrule-go build ~125M timestamps (~3 GB).
 var expansionBomb = "FREQ=DAILY;BYHOUR=" + zeros(500) + ";BYMINUTE=" + zeros(500) + ";BYSECOND=" + zeros(500)
+
+// TestDensestSlotsOracle checks the oracle against rrule-go on short walks in New York: from the
+// 1826 anchor, whose LMT offset gives it a nonzero second, and across the 2026 spring-forward
+// gap, whose candidates are still yielded on the floating timeline.
+func TestDensestSlotsOracle(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name string
+		due  time.Time
+		span time.Duration
+	}{
+		{"LMT anchor with a partial last day", now.AddDate(-200, 0, 1), 3*24*time.Hour + 5*time.Hour + 7*time.Minute},
+		{"across the spring-forward gap", time.Date(2026, 3, 7, 6, 30, 0, 0, time.UTC), 2*24*time.Hour + 30*time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := nextOccurrenceInput{Rule: worstInBudgetMonthly, Due: datedValue{At: tc.due}, Now: now, Zone: ny}
+			opt, bounded, reason := checkNextOccurrenceGuards(in)
+			require.Empty(t, reason)
+			r, err := newRecurrence(in, opt, bounded)
+			require.NoError(t, err)
+			start := r.float(tc.due)
+			rule, _, err := r.floatingRule(start)
+			require.NoError(t, err)
+			end := start.Add(tc.span)
+			yielded := 0
+			next := rule.Iterator()
+			for f, ok := next(); ok && !f.After(end); f, ok = next() {
+				yielded++
+			}
+			assert.Equal(t, yielded, densestSlots(start, end))
+		})
+	}
+}
 
 func TestCheckRRuleBounds(t *testing.T) {
 	accepted := []string{
@@ -267,11 +326,36 @@ func TestEngineBoundsStoredRules(t *testing.T) {
 		assert.Equal(t, time.Date(2026, 10, 22, 17, 0, 0, 0, time.UTC), n.DueDate.UTC())
 	})
 	t.Run("the densest in-budget rule at the horizon's oldest due date completes in bounded time", func(t *testing.T) {
+		due := now.AddDate(-200, 0, 1)
 		start := time.Now()
-		n := completeRepeating(&Task{Repeats: worstInBudgetMonthly, DueDate: now.AddDate(-200, 0, 1)})
-		assert.Less(t, time.Since(start), time.Second, "monthly anchors are not clamped; the budget and the horizon bound the cost (measured 373-413 ms)")
+		n := completeRepeating(&Task{Repeats: worstInBudgetMonthly, DueDate: due})
+		assert.Less(t, time.Since(start), 3*time.Second, "monthly anchors are not clamped; the budget and the horizon bound the cost. rrule-go v1.9.0's civil-time resolution costs ~1.8x per candidate (#37): measured 1.58 s in CI, 1.65-2.30 s on an i5")
 		assert.False(t, n.Done)
 		assert.True(t, n.DueDate.After(now))
+
+		// The hardware-independent counterpart of the timing (#37): a replay of the candidate stream
+		// nextIterated consumes, from the unclamped monthly anchor to its stop, on the engine's own
+		// floating rule. It pins how many candidates the library yields for that walk, not what each
+		// costs, and it does not observe the engine itself: an extra pass or a changed anchor would
+		// not show here.
+		in := nextOccurrenceInput{Rule: worstInBudgetMonthly, Due: datedValue{At: due}, Now: now, Zone: config.GetTimeZone()}
+		opt, bounded, reason := checkNextOccurrenceGuards(in)
+		require.Empty(t, reason)
+		r, err := newRecurrence(in, opt, bounded)
+		require.NoError(t, err)
+		anchor := r.float(due)
+		rule, _, err := r.floatingRule(anchor)
+		require.NoError(t, err)
+		stop := r.float(n.DueDate).Add(lookAround)
+		examined := 0
+		next := rule.Iterator()
+		for f, ok := next(); ok && !f.After(stop); f, ok = next() {
+			examined++
+		}
+		// The oracle's stop is written out (nextIterated's 48 h look-around), so a change to the
+		// constant changes the count against it.
+		assert.Equal(t, densestSlots(anchor, r.float(n.DueDate).Add(48*time.Hour)), examined, "candidates from the anchor to the stop")
+		assert.LessOrEqual(t, examined, (maxAnchorAgeYears*12+2)*maxOccurrencesPerPeriod, "the horizon and the per-period budget bound the walk")
 	})
 	t.Run("a stored rule over the occurrences-per-period budget leaves the task done, fast", func(t *testing.T) {
 		var n *Task
@@ -877,9 +961,13 @@ func TestNoOccurrenceWithinTheSearchWindowIsLogged(t *testing.T) {
 // look-back pass, chronological COUNT, no clamp under COUNT), each at the 200-year horizon. The
 // worst case measured about 0.4 s on a developer machine and 0.66 s on a GitHub-hosted runner; the
 // 2 s ceilings leave room for slower CI hardware while still catching a regression to the
-// multi-second costs these bounds removed. The measured durations are logged.
+// multi-second costs these bounds removed. Dense monthly has its own ceiling since rrule-go v1.9.0,
+// whose civil-time resolution costs about 1.8x per candidate (#37): on an i5, 0.84-0.92 s on v1.8.3
+// (20f892b5b) against 1.63-1.77 s on v1.9.0 unloaded, and 2.19-2.38 s under load. The measured
+// durations are logged.
 func TestNextOccurrenceTiming(t *testing.T) {
 	const ceiling = 2 * time.Second
+	const denseCeiling = 4 * time.Second
 	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
 	withFixedNow(t, now)
 	horizon := now.AddDate(-200, 0, 1)
@@ -900,7 +988,7 @@ func TestNextOccurrenceTiming(t *testing.T) {
 	for _, zone := range []*time.Location{ny, kolkata} {
 		t.Run("dense monthly in "+zone.String(), func(t *testing.T) {
 			n, elapsed := timed(t, zone, &Task{Repeats: worstInBudgetMonthly, DueDate: horizon})
-			assert.Less(t, elapsed, ceiling)
+			assert.Less(t, elapsed, denseCeiling)
 			assert.False(t, n.Done)
 			assert.True(t, n.DueDate.After(now))
 		})

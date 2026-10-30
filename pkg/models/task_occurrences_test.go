@@ -614,17 +614,21 @@ func TestTaskOccurrencesSpringForwardSkip(t *testing.T) {
 }
 
 // TestTaskOccurrencesTiming bounds a query for MaxOccurrencesCount dates on the worst rules of
-// TestNextOccurrenceTiming, at the same anchors and against the same 2 s ceiling. After the first
+// TestNextOccurrenceTiming, at the same anchors and against the same ceilings (4 s for dense monthly,
+// 2 s otherwise). After the first
 // step the anchor is recent, so only that step pays the horizon's cost: the query costs about one
 // completion plus 99 cheap steps. Measured 2026-10-25 on a developer machine: the worst case, dense
 // monthly at the horizon, took 0.42-0.43 s for 100 dates against 0.39-0.40 s for one completion
-// (TestNextOccurrenceTiming, same run); every other row stayed under 30 ms. With CI's roughly 1.65x
-// that is about 0.7 s, so the cap stays at 100. Re-measured 2026-10-28 after the spring-forward
-// skip (8e0270cf5): dense monthly 0.42 s; the all-gap YEARLY rule ends in under 1 ms with
-// no_occurrence (now pinned in TestTaskOccurrencesSpringForwardSkip); every other row stayed
-// under 30 ms. The measured durations are logged.
+// (TestNextOccurrenceTiming, same run); every other row stayed under 30 ms. Re-measured 2026-10-28
+// after the spring-forward skip (8e0270cf5): dense monthly 0.42 s; the all-gap YEARLY rule ends in
+// under 1 ms with no_occurrence (now pinned in TestTaskOccurrencesSpringForwardSkip); every other
+// row stayed under 30 ms. Dense monthly has its own ceiling since rrule-go v1.9.0, whose civil-time
+// resolution costs about 1.8x per candidate (#37): on an i5, 0.90-1.00 s on v1.8.3 (20f892b5b)
+// against 1.74-1.89 s on v1.9.0 unloaded, and 2.88-3.37 s under load. The cap stays at 100. The
+// measured durations are logged.
 func TestTaskOccurrencesTiming(t *testing.T) {
 	const ceiling = 2 * time.Second
+	const denseCeiling = 4 * time.Second
 	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
 	horizon := now.AddDate(-200, 0, 1)
 	db.LoadAndAssertFixtures(t)
@@ -646,7 +650,7 @@ func TestTaskOccurrencesTiming(t *testing.T) {
 	for _, zone := range []string{"America/New_York", "Asia/Kolkata"} {
 		t.Run("dense monthly in "+zone, func(t *testing.T) {
 			answer, elapsed := timed(t, zone, worstInBudgetMonthly, horizon)
-			assert.Less(t, elapsed, ceiling)
+			assert.Less(t, elapsed, denseCeiling)
 			assert.Len(t, answer.Occurrences, MaxOccurrencesCount)
 		})
 		t.Run("never-matching in "+zone, func(t *testing.T) {
