@@ -161,7 +161,13 @@ func exportedTasks(t *testing.T, s *xorm.Session, userID int64) map[string]map[s
 	require.NoError(t, err)
 	require.NoError(t, zw.Close())
 
-	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	return tasksFromExportZip(t, buf.Bytes())
+}
+
+// tasksFromExportZip returns each task's JSON object from the data.json of an export archive, by id.
+func tasksFromExportZip(t *testing.T, archive []byte) map[string]map[string]json.RawMessage {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
 	require.NoError(t, err)
 	var data []byte
 	for _, f := range zr.File {
@@ -220,4 +226,74 @@ func TestExportProjectsAndTasksCarriesRepeatsRRule(t *testing.T) {
 	require.True(t, ok)
 	_, has := plain["repeats_rrule"]
 	assert.False(t, has, "a task without a rule must not carry repeats_rrule")
+}
+
+func TestReplaceExportFileID(t *testing.T) {
+	t.Run("replaces a missing export", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+
+		require.NoError(t, replaceExportFileID(s, 15, 0, 2))
+		require.NoError(t, s.Commit())
+		db.AssertExists(t, "users", map[string]interface{}{"id": 15, "export_file_id": 2}, false)
+	})
+	t.Run("replaces the expected export", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+
+		require.NoError(t, replaceExportFileID(s, 1, 1, 2))
+		require.NoError(t, s.Commit())
+		db.AssertExists(t, "users", map[string]interface{}{"id": 1, "export_file_id": 2}, false)
+	})
+	t.Run("keeps a pointer that changed since it was read", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+
+		require.Error(t, replaceExportFileID(s, 1, 3, 2))
+		require.NoError(t, s.Commit())
+		db.AssertExists(t, "users", map[string]interface{}{"id": 1, "export_file_id": 1}, false)
+	})
+}
+
+// The full export handler keeps both the guarded pointer swap and the repeats_rrule field:
+// the user's pointer moves to the new archive, and that archive carries the exact rule.
+func TestHandleUserDataExportCarriesRepeatsRRule(t *testing.T) {
+	db.LoadAndAssertFixtures(t)
+	files.InitTestFileFixtures(t)
+	notifications.Fake()
+	t.Cleanup(notifications.Unfake)
+
+	s := db.NewSession()
+	u, err := user.GetUserByID(s, 1)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), u.ExportFileID, "fixture user 1 starts with export file 1")
+	// Attachment 2 points at a file row that doesn't exist, which the attachment export can't handle.
+	_, err = s.ID(2).Delete(&TaskAttachment{})
+	require.NoError(t, err)
+	require.NoError(t, s.Commit())
+	_ = s.Close()
+
+	require.NoError(t, handleUserDataExport(t, u))
+
+	s = db.NewSession()
+	defer s.Close()
+	after, err := user.GetUserByID(s, 1)
+	require.NoError(t, err)
+	require.NotEqual(t, int64(1), after.ExportFileID, "the pointer must move to the new export")
+	require.NotZero(t, after.ExportFileID)
+
+	f := &files.File{ID: after.ExportFileID}
+	require.NoError(t, f.LoadFileByID())
+	archive, err := io.ReadAll(f.File)
+	require.NoError(t, err)
+	require.NoError(t, f.File.Close())
+
+	task, ok := tasksFromExportZip(t, archive)["28"]
+	require.True(t, ok, "task 28 must be exported")
+	var got string
+	require.NoError(t, json.Unmarshal(task["repeats_rrule"], &got))
+	assert.Equal(t, "FREQ=HOURLY;INTERVAL=1", got)
 }

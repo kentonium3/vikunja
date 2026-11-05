@@ -238,33 +238,19 @@ func (r *ruleTextSchemas) pathOf(op *huma.Operation) string {
 // TestTaskOccurrences_TaskIDZeroIsNotFound is the WP03 review cycle 1 regression (P2): GET
 // /tasks/0/occurrences panicked, because the optional zone-context helper read task id 0 as "no
 // task" and handed a nil task to models.TaskOccurrences. The GET reads its task through
-// authorizeTaskRead, which runs tasks-read's CanRead for every id: an id below 1 is
-// ErrTaskDoesNotExist before any database access (GetTaskByIDSimple), the same 404 as
-// GET /tasks/0, and no task comes back for the handler to pass on. The HTTP row belongs to WP04.
+// authorizeTaskRead, which runs tasks-read's CanRead for every id, so an id below 1 gets the same
+// 404 as GET /tasks/0 and no task comes back for the handler to pass on. Since upstream v2.8.0's
+// trash-aware read, that CanRead looks the missing id up in the trash, so the 404 needs a database:
+// TestTaskOccurrences_NonPositiveIDMatchesRead (pkg/webtests) asserts it over HTTP. This test keeps the
+// guarantees that need none.
 func TestTaskOccurrences_TaskIDZeroIsNotFound(t *testing.T) {
 	u := &user.User{ID: 1, Username: "user1"}
-	for _, id := range []int64{0, -1} {
-		t.Run(fmt.Sprintf("id %d", id), func(t *testing.T) {
-			// No session: an id below 1 never reaches the database.
-			task, err := authorizeTaskRead(nil, u, id)
-			assert.Nil(t, task)
-			require.Error(t, err)
-			assert.Equal(t, translateDomainError(models.ErrTaskDoesNotExist{ID: id}), err, "the same error tasks-read returns")
-			var status huma.StatusError
-			require.ErrorAs(t, err, &status)
-			assert.Equal(t, 404, status.GetStatus())
-		})
-	}
 
 	t.Run("the preview's optional context: 0 is none, any other id is read", func(t *testing.T) {
 		project, task, err := authorizeZoneContext(nil, u, 0, 0)
 		require.NoError(t, err)
 		assert.Zero(t, project)
 		assert.Nil(t, task, "no context, and the preview never uses the task")
-
-		_, task, err = authorizeZoneContext(nil, u, -1, 0)
-		assert.Nil(t, task)
-		assert.Equal(t, translateDomainError(models.ErrTaskDoesNotExist{ID: -1}), err)
 	})
 
 	t.Run("tasks-occurrences reads its task with the required check only", func(t *testing.T) {

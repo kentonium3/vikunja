@@ -65,6 +65,11 @@ func (td *TaskDuplicate) CanCreate(s *xorm.Session, a web.Auth) (canCreate bool,
 // @Failure 500 {object} models.Message "Internal error"
 // @Router /tasks/{taskID}/duplicate [put]
 func (td *TaskDuplicate) Create(s *xorm.Session, doer web.Auth) (err error) {
+	_, views, err := lockViewsAndTasksForWrite(s, doer, []int64{td.TaskID})
+	if err != nil {
+		return err
+	}
+
 	// Get the original task with all details
 	originalTask := &Task{ID: td.TaskID}
 	err = originalTask.ReadOne(s, doer)
@@ -92,7 +97,7 @@ func (td *TaskDuplicate) Create(s *xorm.Session, doer web.Auth) (err error) {
 		copiesStoredRule:       true,
 	}
 
-	err = createTask(s, newTask, doer, true, true)
+	err = unwrapBulkCreateError(createTasksInViews(s, newTask.ProjectID, []*Task{newTask}, doer, true, true, false, views))
 	if err != nil {
 		return err
 	}

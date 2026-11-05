@@ -166,7 +166,10 @@ func TestTaskRelativeReminder(t *testing.T) {
 
 		// Last saver wins: a Berlin user re-saves the original due date unchanged. One day
 		// before Mon 03-15 01:00 CET is Sun 03-14 01:00 CET (00:00Z), Berlin's calendar, which reads
-		// Sat 19:00 EST in New York.
+		// Sat 19:00 EST in New York. The Berlin user needs write access to the project: the
+		// locked update rechecks it.
+		_, err := s.Insert(&ProjectUser{UserID: 2, ProjectID: 1, Permission: PermissionWrite})
+		require.NoError(t, err)
 		setUserZone(t, s, 2, "Europe/Berlin")
 		update = &Task{ID: task.ID, Title: "renamed", ProjectID: 1, DueDate: due, Reminders: dayBefore()}
 		require.NoError(t, update.Update(s, &user.User{ID: 2}))

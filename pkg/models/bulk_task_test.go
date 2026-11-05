@@ -74,6 +74,33 @@ func TestBulkTask_Update(t *testing.T) {
 		assert.False(t, allowed)
 	})
 
+	t.Run("task moved to a forbidden project after the permission check", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+
+		bt := &BulkTask{
+			TaskIDs: []int64{1, 3},
+			Fields:  []string{"title"},
+			Values:  &Task{Title: "bulkupdated"},
+		}
+
+		allowed, err := bt.CanUpdate(s, u)
+		require.NoError(t, err)
+		require.True(t, allowed)
+
+		// Project 2 belongs to user 3 and is not shared with user 1.
+		_, err = s.ID(1).Cols("project_id", "index").Update(&Task{ProjectID: 2, Index: 9999})
+		require.NoError(t, err)
+
+		err = bt.Update(s, u)
+		require.ErrorIs(t, err, ErrGenericForbidden{})
+		require.NoError(t, s.Commit())
+
+		db.AssertExists(t, "tasks", map[string]interface{}{"id": 1, "title": "task #1", "project_id": 2}, false)
+		db.AssertExists(t, "tasks", map[string]interface{}{"id": 3, "title": "task #3 high prio", "project_id": 1}, false)
+	})
+
 	t.Run("duplicate ids update the task once", func(t *testing.T) {
 		db.LoadAndAssertFixtures(t)
 		s := db.NewSession()
@@ -165,6 +192,39 @@ func TestBulkTask_Update(t *testing.T) {
 
 		db.AssertExists(t, "tasks", map[string]interface{}{"id": 1, "repeats": "FREQ=WEEKLY;INTERVAL=1"}, false)
 		db.AssertExists(t, "tasks", map[string]interface{}{"id": 3, "repeats": "FREQ=WEEKLY;INTERVAL=1"}, false)
+	})
+
+	t.Run("marking a repeating task done advances it like a single update", func(t *testing.T) {
+		// The bulk path runs the same per-task update body as Task.Update (updateSingleTaskInViews),
+		// so completing a repeating task in bulk must store the same next occurrence.
+		complete := func(t *testing.T, bulk bool) Task {
+			db.LoadAndAssertFixtures(t)
+			s := db.NewSession()
+			defer s.Close()
+
+			if bulk {
+				bt := &BulkTask{TaskIDs: []int64{28}, Fields: []string{"done"}, Values: &Task{Done: true}}
+				require.NoError(t, bt.Update(s, u))
+			} else {
+				stored, err := GetTaskSimple(s, &Task{ID: 28})
+				require.NoError(t, err)
+				stored.Done = true
+				require.NoError(t, stored.updateSingleTask(s, u, []string{"done"}))
+			}
+			require.NoError(t, s.Commit())
+
+			after, err := GetTaskSimple(s, &Task{ID: 28})
+			require.NoError(t, err)
+			return after
+		}
+
+		single := complete(t, false)
+		bulk := complete(t, true)
+
+		assert.False(t, bulk.Done, "a repeating task stays open after completion")
+		assert.Equal(t, "FREQ=HOURLY;INTERVAL=1", bulk.Repeats)
+		assert.True(t, bulk.DueDate.After(time.Date(2018, 12, 2, 22, 25, 24, 0, time.UTC)), "due date advanced, got %v", bulk.DueDate)
+		assert.True(t, bulk.DueDate.Equal(single.DueDate), "bulk %v, single %v", bulk.DueDate, single.DueDate)
 	})
 
 	t.Run("bulk update without assignees field keeps assignees", func(t *testing.T) {

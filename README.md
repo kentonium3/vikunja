@@ -2,11 +2,16 @@
 
 [![Build Status](https://github.com/go-vikunja/vikunja/actions/workflows/ci.yml/badge.svg)](https://github.com/go-vikunja/vikunja/actions/workflows/ci.yml)
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](LICENSE)
-[![Install](https://img.shields.io/badge/download-v2.7.1-brightgreen.svg)](https://vikunja.io/docs/installing)
+[![Install](https://img.shields.io/badge/download-v2.8.0-brightgreen.svg)](https://vikunja.io/docs/installing)
 [![Docker Pulls](https://img.shields.io/docker/pulls/vikunja/vikunja.svg)](https://hub.docker.com/r/vikunja/vikunja/)
 [![OpenAPI Docs](https://img.shields.io/badge/swagger-docs-brightgreen.svg)](https://try.vikunja.io/api/v2/docs)
 
 # Vikunja
+
+> [!IMPORTANT]
+> This repository (kentonium3/vikunja) is a downstream distribution of Vikunja that adds RFC 5545 RRULE recurrence for repeating tasks.
+> The current preview build is on the [Releases page](https://github.com/kentonium3/vikunja/releases).
+> It is not an official Vikunja release. The canonical project is [go-vikunja/vikunja](https://github.com/go-vikunja/vikunja).
 
 > The task manager you actually own. 
 

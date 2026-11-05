@@ -2442,7 +2442,7 @@ const docTemplate = `{
                         "JWTKeyAuth": []
                     }
                 ],
-                "description": "Delets a project",
+                "description": "Moves a project and all its sub-projects to the trash. They are deleted permanently after 30 days.",
                 "produces": [
                     "application/json"
                 ],
@@ -3306,7 +3306,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "The sorting parameter. You can pass this multiple times to get the tasks ordered by multiple different parametes, along with ` + "`" + `order_by` + "`" + `. Possible values to sort by are ` + "`" + `id` + "`" + `, ` + "`" + `title` + "`" + `, ` + "`" + `description` + "`" + `, ` + "`" + `done` + "`" + `, ` + "`" + `done_at` + "`" + `, ` + "`" + `due_date` + "`" + `, ` + "`" + `created_by_id` + "`" + `, ` + "`" + `project_id` + "`" + `, ` + "`" + `repeat_after` + "`" + `, ` + "`" + `priority` + "`" + `, ` + "`" + `start_date` + "`" + `, ` + "`" + `end_date` + "`" + `, ` + "`" + `hex_color` + "`" + `, ` + "`" + `percent_done` + "`" + `, ` + "`" + `uid` + "`" + `, ` + "`" + `created` + "`" + `, ` + "`" + `updated` + "`" + `, ` + "`" + `relevance` + "`" + `. ` + "`" + `relevance` + "`" + ` sorts by search relevance (most relevant first, requires ` + "`" + `s` + "`" + `; ignored when the database cannot score the query). Default is ` + "`" + `id` + "`" + `.",
+                        "description": "The sorting parameter. You can pass this multiple times to get the tasks ordered by multiple different parametes, along with ` + "`" + `order_by` + "`" + `. Possible values to sort by are ` + "`" + `id` + "`" + `, ` + "`" + `title` + "`" + `, ` + "`" + `description` + "`" + `, ` + "`" + `done` + "`" + `, ` + "`" + `done_at` + "`" + `, ` + "`" + `due_date` + "`" + `, ` + "`" + `created_by_id` + "`" + `, ` + "`" + `project_id` + "`" + `, ` + "`" + `repeats` + "`" + `, ` + "`" + `priority` + "`" + `, ` + "`" + `start_date` + "`" + `, ` + "`" + `end_date` + "`" + `, ` + "`" + `hex_color` + "`" + `, ` + "`" + `percent_done` + "`" + `, ` + "`" + `uid` + "`" + `, ` + "`" + `created` + "`" + `, ` + "`" + `updated` + "`" + `, ` + "`" + `relevance` + "`" + `. ` + "`" + `relevance` + "`" + ` sorts by search relevance (most relevant first, requires ` + "`" + `s` + "`" + `; ignored when the database cannot score the query). Default is ` + "`" + `id` + "`" + `.",
                         "name": "sort_by",
                         "in": "query"
                     },
@@ -5006,7 +5006,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "The sorting parameter. You can pass this multiple times to get the tasks ordered by multiple different parametes, along with ` + "`" + `order_by` + "`" + `. Possible values to sort by are ` + "`" + `id` + "`" + `, ` + "`" + `title` + "`" + `, ` + "`" + `description` + "`" + `, ` + "`" + `done` + "`" + `, ` + "`" + `done_at` + "`" + `, ` + "`" + `due_date` + "`" + `, ` + "`" + `created_by_id` + "`" + `, ` + "`" + `project_id` + "`" + `, ` + "`" + `repeat_after` + "`" + `, ` + "`" + `priority` + "`" + `, ` + "`" + `start_date` + "`" + `, ` + "`" + `end_date` + "`" + `, ` + "`" + `hex_color` + "`" + `, ` + "`" + `percent_done` + "`" + `, ` + "`" + `uid` + "`" + `, ` + "`" + `created` + "`" + `, ` + "`" + `updated` + "`" + `, ` + "`" + `relevance` + "`" + `. ` + "`" + `relevance` + "`" + ` sorts by search relevance (most relevant first, requires ` + "`" + `s` + "`" + `; ignored when the database cannot score the query). Default is ` + "`" + `id` + "`" + `.",
+                        "description": "The sorting parameter. You can pass this multiple times to get the tasks ordered by multiple different parametes, along with ` + "`" + `order_by` + "`" + `. Possible values to sort by are ` + "`" + `id` + "`" + `, ` + "`" + `title` + "`" + `, ` + "`" + `description` + "`" + `, ` + "`" + `done` + "`" + `, ` + "`" + `done_at` + "`" + `, ` + "`" + `due_date` + "`" + `, ` + "`" + `created_by_id` + "`" + `, ` + "`" + `project_id` + "`" + `, ` + "`" + `repeats` + "`" + `, ` + "`" + `priority` + "`" + `, ` + "`" + `start_date` + "`" + `, ` + "`" + `end_date` + "`" + `, ` + "`" + `hex_color` + "`" + `, ` + "`" + `percent_done` + "`" + `, ` + "`" + `uid` + "`" + `, ` + "`" + `created` + "`" + `, ` + "`" + `updated` + "`" + `, ` + "`" + `relevance` + "`" + `. ` + "`" + `relevance` + "`" + ` sorts by search relevance (most relevant first, requires ` + "`" + `s` + "`" + `; ignored when the database cannot score the query). Default is ` + "`" + `id` + "`" + `.",
                         "name": "sort_by",
                         "in": "query"
                     },
@@ -9828,6 +9828,18 @@ const docTemplate = `{
                     "description": "A timestamp when this project was created. You cannot change this value.",
                     "type": "string"
                 },
+                "deleted_at": {
+                    "description": "When this project was moved to the trash. Trashed projects are removed permanently 30 days later.",
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "description": "The user who moved this project to the trash. Only present on trashed projects.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/user.User"
+                        }
+                    ]
+                },
                 "description": {
                     "description": "The description of the project.",
                     "type": "string"
@@ -10283,6 +10295,14 @@ const docTemplate = `{
                     "description": "A timestamp when this task was deleted. Soft-deleted tasks are kept for 30 days before they are removed permanently.\nomitzero keeps the field out of the JSON of regular tasks — it only ever appears on soft-deleted ones (the later trash listing).",
                     "type": "string"
                 },
+                "deleted_by": {
+                    "description": "Null for tasks soft-deleted before this was tracked.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/user.User"
+                        }
+                    ]
+                },
                 "description": {
                     "description": "The task description.",
                     "type": "string"
@@ -10379,17 +10399,17 @@ const docTemplate = `{
                         "$ref": "#/definitions/models.TaskReminder"
                     }
                 },
-                "repeat_after": {
-                    "description": "An amount in seconds this task repeats itself. If this is set, when marking the task as done, it will mark itself as \"undone\" and then increase all remindes and the due date by its amount.",
-                    "type": "integer"
-                },
-                "repeat_mode": {
-                    "description": "Can have three possible values which will trigger when the task is marked as done: 0 = repeats after the amount specified in repeat_after, 1 = repeats all dates each months (ignoring repeat_after), 3 = repeats from the current date rather than the last set date.",
+                "repeat": {
+                    "description": "Structured recurrence pattern for the API. Mirrors RFC 5545 RRULE fields.\nConverted to/from the Repeats RRULE string at the API boundary.",
                     "allOf": [
                         {
-                            "$ref": "#/definitions/models.TaskRepeatMode"
+                            "$ref": "#/definitions/models.TaskRepeat"
                         }
                     ]
+                },
+                "repeats_from_current_date": {
+                    "description": "If true, the next occurrence is calculated from the completion date rather than the original due date.",
+                    "type": "boolean"
                 },
                 "start_date": {
                     "description": "When this task starts.",
@@ -10608,18 +10628,97 @@ const docTemplate = `{
                 }
             }
         },
-        "models.TaskRepeatMode": {
-            "type": "integer",
-            "enum": [
-                0,
-                1,
-                2
-            ],
-            "x-enum-varnames": [
-                "TaskRepeatModeDefault",
-                "TaskRepeatModeMonth",
-                "TaskRepeatModeFromCurrentDate"
-            ]
+        "models.TaskRepeat": {
+            "type": "object",
+            "properties": {
+                "by_day": {
+                    "description": "Days of the week: \"mo\",\"tu\",\"we\",\"th\",\"fr\",\"sa\",\"su\". Supports nth weekday with prefix, e.g. \"2tu\" (second Tuesday), \"-1fr\" (last Friday).",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "by_hour": {
+                    "description": "Hours of the day (0-23).",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "by_minute": {
+                    "description": "Minutes of the hour (0-59).",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "by_month": {
+                    "description": "Months of the year (1-12).",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "by_month_day": {
+                    "description": "Days of the month (1-31, or negative from end).",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "by_second": {
+                    "description": "Seconds of the minute (0-59).",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "by_set_pos": {
+                    "description": "Positions within the recurrence set (-366 to 366).",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "by_week_no": {
+                    "description": "ISO week numbers (1-53, or negative from end).",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "by_year_day": {
+                    "description": "Days of the year (1-366, or negative from end).",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "count": {
+                    "description": "Maximum number of occurrences. 0 means unlimited.",
+                    "type": "integer"
+                },
+                "freq": {
+                    "description": "The recurrence frequency: \"yearly\", \"monthly\", \"weekly\", \"daily\", \"hourly\", \"minutely\", or \"secondly\".",
+                    "type": "string"
+                },
+                "interval": {
+                    "description": "The interval between occurrences. Defaults to 1.",
+                    "type": "integer"
+                },
+                "read_only": {
+                    "description": "True when the stored rule has parts this structured view cannot hold (for example BYEASTER or\nDTSTART from a CalDAV client). Such a rule can be removed but not edited through the API.",
+                    "type": "boolean"
+                },
+                "until": {
+                    "description": "End date for the recurrence in RFC 3339 format. Nil means no end date.",
+                    "type": "string"
+                },
+                "wkst": {
+                    "description": "Start day of the week: \"mo\" (default), \"tu\", \"we\", etc.",
+                    "type": "string"
+                }
+            }
         },
         "models.TaskUnreadStatus": {
             "type": "object",
@@ -11677,6 +11776,7 @@ const docTemplate = `{
                 "code": {
                     "type": "integer"
                 },
+                "details": {},
                 "i18n_params": {
                     "description": "I18nParams carries Message's dynamic values, keyed by the client's translation placeholder names, so clients can localise the error.",
                     "type": "object",
