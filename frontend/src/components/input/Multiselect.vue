@@ -6,6 +6,7 @@
 		tabindex="-1"
 		:aria-disabled="disabled"
 		@focus="focus"
+		@focusout="handleFocusOut"
 	>
 		<div
 			class="control"
@@ -62,6 +63,7 @@
 					@keyup="search"
 					@keyup.enter.exact.prevent="() => createOrSelectOnEnter()"
 					@keydown="clearKeyupGuard"
+					@keydown.enter.exact="preventFormSubmitWhileOpen"
 					@keydown.down.exact.prevent="() => preSelect(0)"
 					@keydown.esc="handleEscape"
 					@focus="handleFocus"
@@ -85,6 +87,7 @@
 				:class="{'search-results-inline': inline}"
 				role="listbox"
 				:aria-label="accessibleName"
+				tabindex="-1"
 			>
 				<BaseButton
 					v-for="(data, index) in filteredSearchResults"
@@ -92,6 +95,7 @@
 					:ref="(el) => setResult(el, index)"
 					class="search-result-button is-fullwidth"
 					role="option"
+					tabindex="-1"
 					@keydown.up.prevent="() => preSelect(index - 1)"
 					@keydown.down.prevent="() => preSelect(index + 1)"
 					@keydown.esc="closeAndRefocus"
@@ -118,6 +122,7 @@
 					:ref="(el) => setResult(el, filteredSearchResults.length)"
 					class="search-result-button is-fullwidth is-create-option"
 					role="option"
+					tabindex="-1"
 					@keydown.up.prevent="() => preSelect(filteredSearchResults.length - 1)"
 					@keydown.down.prevent="() => preSelect(filteredSearchResults.length + 1)"
 					@keydown.esc="closeAndRefocus"
@@ -398,6 +403,20 @@ function hideSearchResultsHandler(e: MouseEvent) {
 
 function closeSearchResults() {
 	showSearchResults.value = false
+}
+
+// A null relatedTarget is ignored: iOS Safari doesn't focus a tapped option, so closing here would drop the click.
+function handleFocusOut(e: FocusEvent) {
+	if (e.relatedTarget instanceof Node && !multiselectRoot.value?.contains(e.relatedTarget)) {
+		closeSearchResults()
+	}
+}
+
+// Enter picks a result on keyup; its keydown must not submit a surrounding form first.
+function preventFormSubmitWhileOpen(e: KeyboardEvent) {
+	if (searchResultsVisible.value) {
+		e.preventDefault()
+	}
 }
 
 function handleEscape(e: KeyboardEvent) {

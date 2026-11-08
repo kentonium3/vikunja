@@ -1028,6 +1028,33 @@
         "empty": "No emoji found"
       }
     },
+    "emojiPicker": {
+      "title": "Emoji picker",
+      "search": "Search emoji",
+      "skinTone": "Skin tone",
+      "categories": "Emoji categories",
+      "results": "Search results",
+      "loadError": "Could not load emoji.",
+      "tones": {
+        "light": "Light",
+        "mediumLight": "Medium light",
+        "medium": "Medium",
+        "mediumDark": "Medium dark",
+        "dark": "Dark"
+      },
+      "groups": {
+        "recent": "Recently used",
+        "smileys": "Smileys & emotion",
+        "people": "People & body",
+        "nature": "Animals & nature",
+        "food": "Food & drink",
+        "travel": "Travel & places",
+        "activities": "Activities",
+        "objects": "Objects",
+        "symbols": "Symbols",
+        "flags": "Flags"
+      }
+    },
     "multiselect": {
       "createPlaceholder": "Create",
       "selectPlaceholder": "Click or press enter to select",
@@ -1141,6 +1168,7 @@
       "removeDueDate": "Remove due date",
       "removeStartDate": "Remove start date",
       "removeEndDate": "Remove end date",
+      "removeColor": "Remove color",
       "removeRepeat": "Remove repeat interval",
       "removeAssignee": "Remove {user} as assignee",
       "move": "Move task to a different project",
@@ -1164,28 +1192,21 @@
       "title": "Task detail",
       "markAsDone": "Mark '{task}' as done",
       "scrollToBottom": "Scroll to bottom",
-      "organization": "Organization",
-      "management": "Management",
-      "dateAndTime": "Date and time",
+      "moreActions": "More actions",
+      "properties": {
+        "dueDate": "Due date",
+        "startDate": "Start date",
+        "endDate": "End date"
+      },
       "actions": {
-        "assign": "Assign to User",
-        "label": "Add Labels",
-        "priority": "Set Priority",
-        "dueDate": "Set Due Date",
-        "startDate": "Set Start Date",
-        "endDate": "Set End Date",
-        "reminders": "Set Reminders",
-        "repeatAfter": "Set Repeat",
-        "percentDone": "Set Progress",
-        "attachments": "Add Attachments",
+        "attachments": "Add attachments",
         "timeTracking": "Track time",
-        "relatedTasks": "Add Relation",
+        "relatedTasks": "Add relation",
         "moveProject": "Move",
         "duplicate": "Duplicate",
-        "color": "Set Color",
         "delete": "Delete",
-        "favorite": "Add to Favorites",
-        "unfavorite": "Remove from Favorites"
+        "favorite": "Add to favorites",
+        "unfavorite": "Remove from favorites"
       }
     },
     "attributes": {
@@ -1277,6 +1298,7 @@
     },
     "assignee": {
       "placeholder": "Type to assign a user…",
+      "placeholderMore": "Assign another…",
       "selectPlaceholder": "Assign this user",
       "assignSuccess": "The user has been assigned successfully.",
       "unassignSuccess": "The user has been unassigned successfully."
