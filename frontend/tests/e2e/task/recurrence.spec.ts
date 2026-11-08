@@ -4,6 +4,9 @@ import {ProjectFactory} from '../../factories/project'
 import {TaskFactory} from '../../factories/task'
 import {updateUserSettings} from '../../support/updateUserSettings'
 import {setupApiUrl} from '../../support/authenticateUser'
+import {createDefaultViews} from '../project/prepareProjects'
+import {BucketFactory} from '../../factories/bucket'
+import {TaskBucketFactory} from '../../factories/task_buckets'
 
 // The user's time zone setting is the zone the browser and the API server run in, so the editor's
 // recurrence zone, its preview and the scheduler all agree.
@@ -324,8 +327,9 @@ function control(scope: Locator | Page, role: Parameters<Page['getByRole']>[0], 
 	return scope.getByRole(role, {name, exact: true})
 }
 
+// The sidebar always shows the repeat row, so a task with no rule offers its trigger at once.
 function setRepeatButton(page: Page): Locator {
-	return control(page, 'button', 'Set Repeat')
+	return trigger(page, 'Does not repeat')
 }
 
 function removeRepeatButton(page: Page): Locator {
@@ -601,7 +605,6 @@ test.describe('Task recurrence', () => {
 
 			await page.reload()
 			await expect(heading(page)).toBeVisible()
-			await expect(repeatField(page)).toHaveCount(0)
 			await expect(setRepeatButton(page)).toBeVisible()
 		})
 	})
@@ -702,7 +705,7 @@ test.describe('Task recurrence', () => {
 
 			await page.reload()
 			await expect(heading(page)).toBeVisible()
-			await expect(repeatField(page)).toHaveCount(0)
+			await expect(setRepeatButton(page)).toBeVisible()
 		})
 	})
 
@@ -1670,7 +1673,7 @@ test.describe('Task recurrence', () => {
 			const after = await getTaskV2(apiContext, userToken, 1)
 			expect(after.repeat).toBeUndefined()
 			expect(after.repeats_from_current_date).toBe(false)
-			await expect(repeatField(page)).toHaveCount(0)
+			await expect(setRepeatButton(page)).toBeVisible()
 		})
 	})
 
@@ -1683,8 +1686,9 @@ test.describe('Task recurrence', () => {
 			await openTask(page, 1)
 			const field = trigger(page, MWF_SUMMARY)
 
-			await removeRepeatButton(page).focus()
-			await page.keyboard.press('Tab')
+			// The trigger comes first in the row, ahead of the from-completion box and the remove button.
+			await fromCompletionCheckbox(page).focus()
+			await page.keyboard.press('Shift+Tab')
 			await expect(field).toBeFocused()
 			await expect(field).toHaveAttribute('aria-expanded', 'false')
 
@@ -1746,8 +1750,8 @@ test.describe('Task recurrence', () => {
 			const seeded = await seedRepeat(apiContext, userToken, 1, FOREIGN_YEARLY)
 			await openTask(page, 1)
 
-			await removeRepeatButton(page).focus()
-			await page.keyboard.press('Tab')
+			await fromCompletionCheckbox(page).focus()
+			await page.keyboard.press('Shift+Tab')
 			await expect(trigger(page, /^Custom repeat: /)).toBeFocused()
 			await page.keyboard.press('Enter')
 			await expect(control(editor(page), 'button', 'Does not repeat')).toBeFocused()
@@ -1795,7 +1799,8 @@ test.describe('Task recurrence', () => {
 			await setRepeatButton(page).click()
 			await expect(trigger(page, 'Does not repeat')).toBeVisible()
 			await expect(trigger(page, 'Does not repeat')).toHaveAttribute('aria-haspopup', 'dialog')
-			await expect(removeRepeatButton(page)).toBeVisible()
+			// The row only offers removal once there is a rule to remove.
+			await expect(removeRepeatButton(page)).toHaveCount(0)
 			await expect(fromCompletionCheckbox(page)).toBeVisible()
 			await expectEveryControlNamed(editor(page))
 
@@ -1837,6 +1842,192 @@ test.describe('Task recurrence', () => {
 				await expect(control(replaceDialog(page), 'button', name)).toBeVisible()
 			}
 			await expectEveryControlNamed(replaceDialog(page))
+		})
+	})
+
+	test.describe('in the property sidebar', () => {
+		test('Escape closes the repeat editor in the task modal before the modal itself', async ({
+			authenticatedPage: page,
+		}) => {
+			const views = await createDefaultViews(1)
+			const buckets = await BucketFactory.create(1, {project_view_id: views[3].id})
+			await createTask(1, nextFriday())
+			await TaskBucketFactory.create(1, {task_id: 1, bucket_id: buckets[0].id, project_view_id: views[3].id})
+			await page.goto('/projects/1/4')
+			await page.locator('.bucket .task').first().click()
+			const modal = page.locator('dialog[open] .task-view')
+			await expect(modal).toBeVisible()
+
+			await setRepeatButton(page).click()
+			await expect(editor(page)).toBeVisible()
+			await page.keyboard.press('Escape')
+			await expect(editor(page)).toHaveCount(0)
+			await expect(modal).toBeVisible()
+			await expect(setRepeatButton(page)).toBeFocused()
+
+			await page.keyboard.press('Escape')
+			await expect(modal).toBeHidden()
+		})
+
+		const isTaskDelete = (request: Request) => request.method() === 'DELETE' && new URL(request.url()).pathname.endsWith('/tasks/1')
+
+		// Field shortcuts run from any target that is not a typing field, and a focused button is not one.
+		async function expectNoShortcutActsBehind(page: Page, stillOpen: Locator) {
+			await page.keyboard.press('l')
+			await expect(page.locator('.property-labels input:focus')).toHaveCount(0)
+			let deleted = 0
+			const countDeletes = (request: Request) => {
+				if (isTaskDelete(request)) {
+					deleted++
+				}
+			}
+			page.on('request', countDeletes)
+			await page.keyboard.press('Delete')
+			// The shortcut trashes the task straight away, so give a request the time to appear.
+			await page.waitForTimeout(300)
+			page.off('request', countDeletes)
+			expect(deleted).toBe(0)
+			await expect(stillOpen).toBeVisible()
+
+			let patched = 0
+			const countPatches = (request: Request) => {
+				if (isTaskPatch(request, 1)) {
+					patched++
+				}
+			}
+			page.on('request', countPatches)
+			for (const key of ['t', 's', 'Shift+T', 'ControlOrMeta+s']) {
+				await page.keyboard.press(key)
+			}
+			await page.waitForTimeout(300)
+			page.off('request', countPatches)
+			expect(patched).toBe(0)
+			await expect(page).toHaveURL('/tasks/1')
+			await expect(stillOpen).toBeVisible()
+		}
+
+		async function expectShortcutsResume(page: Page) {
+			await expect(trigger(page)).toHaveAttribute('aria-expanded', 'false')
+			await page.locator('body').press('l')
+			await expect(page.locator('.property-labels input')).toBeFocused()
+		}
+
+		test('task shortcuts do not act behind the presets', async ({authenticatedPage: page}) => {
+			await createTask(1, nextFriday())
+			await openTask(page, 1)
+			await setRepeatButton(page).click()
+			await expect(control(editor(page), 'button', 'Does not repeat')).toBeFocused()
+
+			await expectNoShortcutActsBehind(page, editor(page))
+
+			await page.keyboard.press('Escape')
+			await expect(editor(page)).toHaveCount(0)
+			await expect(trigger(page)).toHaveAttribute('aria-expanded', 'false')
+			const deleting = page.waitForRequest(isTaskDelete)
+			await page.keyboard.press('Delete')
+			await deleting
+		})
+
+		test('task shortcuts do not act behind the Custom form', async ({authenticatedPage: page}) => {
+			await createTask(1, nextFriday())
+			await openTask(page, 1)
+			await setRepeatButton(page).click()
+			await control(editor(page), 'button', 'Custom…').click()
+			await control(editor(page), 'button', 'Done').focus()
+
+			await expectNoShortcutActsBehind(page, editor(page))
+
+			await page.keyboard.press('Escape')
+			await expect(editor(page)).toHaveCount(0)
+			await expectShortcutsResume(page)
+		})
+
+		test('task shortcuts do not act behind the replace confirmation', async ({
+			authenticatedPage: page, apiContext, userToken,
+		}) => {
+			await createTask(1, nextFriday())
+			await seedRepeat(apiContext, userToken, 1, FOREIGN_YEARLY)
+			await openTask(page, 1)
+			await trigger(page, /^Custom repeat: /).click()
+			await control(editor(page), 'button', 'Every day').click()
+			await expect(replaceDialog(page)).toBeVisible()
+
+			await expectNoShortcutActsBehind(page, replaceDialog(page))
+
+			await page.keyboard.press('Escape')
+			await expect(replaceDialog(page)).toHaveCount(0)
+			await page.keyboard.press('Escape')
+			await expect(editor(page)).toHaveCount(0)
+			await expectShortcutsResume(page)
+		})
+
+		test('the editor stays open through Escape while a save runs and closes once it succeeds', async ({
+			authenticatedPage: page, apiContext, userToken,
+		}) => {
+			await createTask(1, nextFriday())
+			await openTask(page, 1)
+			await setRepeatButton(page).click()
+
+			let release!: () => void
+			const released = new Promise<void>(resolve => {
+				release = resolve
+			})
+			await page.route(url => url.pathname === '/api/v2/tasks/1', async route => {
+				if (route.request().method() === 'PATCH') {
+					await released
+				}
+				await route.fallback()
+			})
+			const sent = page.waitForRequest(request => isTaskPatch(request, 1))
+			const save = waitForTaskPatch(page, 1)
+			await control(editor(page), 'button', 'Every day').click()
+			await sent
+
+			await page.keyboard.press('Escape')
+			await expect(editor(page)).toBeVisible()
+			release()
+			await expectPatchOk(save)
+
+			await expect(editor(page)).toHaveCount(0)
+			await expect(trigger(page, 'Every day')).toBeVisible()
+			expect((await getTaskV2(apiContext, userToken, 1)).repeat).toMatchObject({freq: 'daily'})
+		})
+
+		test('a date and time reminder is added through the picker and leaves the rule alone', async ({
+			authenticatedPage: page, apiContext, userToken,
+		}) => {
+			await createTask(1, nextFriday())
+			await openTask(page, 1)
+			await setRepeatButton(page).click()
+			const save = waitForTaskPatch(page, 1)
+			await control(editor(page), 'button', 'Every day').click()
+			await expectPatchOk(save)
+			await expect(trigger(page, 'Every day')).toBeVisible()
+
+			await page.locator('.task-view .property-reminders button').filter({hasText: 'Add a reminder'}).click()
+			const popup = page.locator('.reminder-options-popup.is-open')
+			await popup.locator('.option-button').filter({hasText: 'Date and time'}).click()
+			const picker = popup.locator('.datepicker-popup')
+			await picker.locator('.datepicker__quick-select-date').filter({hasText: 'Tomorrow'}).click()
+			const saved = waitForTaskPatch(page, 1)
+			await picker.locator('[data-cy="closeDatepicker"]').click()
+			await expectPatchOk(saved)
+
+			const stored = await getTaskV2(apiContext, userToken, 1)
+			expect(stored.reminders).toHaveLength(1)
+			const reminder = stored.reminders![0]!
+			expect(reminder.relative_to ?? '').toBe('')
+			expect(reminder.relative_period ?? 0).toBe(0)
+			const tomorrow = new Date(Date.now() + DAY_MS)
+			const shown = new Date(reminder.reminder!)
+			expect([shown.getFullYear(), shown.getMonth(), shown.getDate()])
+				.toStrictEqual([tomorrow.getFullYear(), tomorrow.getMonth(), tomorrow.getDate()])
+			expect(stored.repeat).toMatchObject({freq: 'daily'})
+
+			await page.reload()
+			await expect(trigger(page, 'Every day')).toBeVisible()
+			await expect(page.locator('.task-view .property-reminders .reminder-input')).not.toHaveCount(0)
+			expect((await getTaskV2(apiContext, userToken, 1)).reminders![0]!.reminder).toBe(reminder.reminder)
 		})
 	})
 
@@ -1920,6 +2111,74 @@ test.describe('Task recurrence', () => {
 			await page.reload()
 			await expect(trigger(page, MWF_SUMMARY)).toBeVisible()
 			expect((await getTaskV2(apiContext, userToken, 1)).repeat).toMatchObject({freq: 'weekly', by_day: ['mo', 'we', 'fr']})
+		})
+
+		test('the sheet stays through a dismiss while a save runs, and closes once it succeeds', async ({
+			authenticatedPage: page, apiContext, userToken,
+		}) => {
+			await createTask(1, nextFriday())
+			await openTask(page, 1)
+			await setRepeatButton(page).click()
+			await expect(bottomSheet(page)).toBeVisible()
+
+			let release!: () => void
+			const released = new Promise<void>(resolve => {
+				release = resolve
+			})
+			await page.route(url => url.pathname === '/api/v2/tasks/1', async route => {
+				if (route.request().method() === 'PATCH') {
+					await released
+				}
+				await route.fallback()
+			})
+			const sent = page.waitForRequest(request => isTaskPatch(request, 1))
+			const save = waitForTaskPatch(page, 1)
+			await control(editor(page), 'button', 'Every day').click()
+			await sent
+
+			await page.keyboard.press('Escape')
+			await expect(bottomSheet(page)).toBeVisible()
+			release()
+			await expectPatchOk(save)
+
+			await expect(bottomSheet(page)).toHaveCount(0)
+			await expect(trigger(page, 'Every day')).toBeVisible()
+			expect((await getTaskV2(apiContext, userToken, 1)).repeat).toMatchObject({freq: 'daily'})
+		})
+
+		test('the sheet stays through a dismiss while a save runs, and keeps the draft when it fails', async ({
+			authenticatedPage: page,
+		}) => {
+			await createTask(1, nextFriday())
+			await openTask(page, 1)
+			await setRepeatButton(page).click()
+			await control(editor(page), 'button', 'Custom…').click()
+			await control(editor(page), 'spinbutton', 'Every').fill('3')
+
+			let release!: () => void
+			const released = new Promise<void>(resolve => {
+				release = resolve
+			})
+			await page.route(url => url.pathname === '/api/v2/tasks/1', async route => {
+				if (route.request().method() !== 'PATCH') {
+					return route.fallback()
+				}
+				await released
+				await route.fulfill({status: 500, contentType: 'application/json', body: '{"message":"held to fail"}'})
+			})
+			const sent = page.waitForRequest(request => isTaskPatch(request, 1))
+			const failed = page.waitForResponse(response => isTaskPatch(response.request(), 1) && response.status() === 500)
+			await control(editor(page), 'button', 'Done').click()
+			await sent
+
+			await page.keyboard.press('Escape')
+			await expect(bottomSheet(page)).toBeVisible()
+			release()
+			await failed
+
+			await expect(control(editor(page), 'button', 'Done')).toBeEnabled()
+			await expect(bottomSheet(page)).toBeVisible()
+			await expect(control(editor(page), 'spinbutton', 'Every')).toHaveValue('3')
 		})
 
 		test('closing the sheet without choosing saves nothing and returns focus to the field', async ({

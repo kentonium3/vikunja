@@ -21,10 +21,9 @@ vi.mock('@/message', () => message)
 const projects = vi.hoisted(() => ({} as Record<number, unknown>))
 vi.mock('@/composables/useProjects', () => ({useProjects: () => ({projects})}))
 vi.mock('@/composables/useLabels', () => ({useLabels: () => ({filterLabelsByQuery: () => [], isPending: {value: false}, getLabelById: vi.fn()})}))
-vi.mock('vuemoji-picker', () => ({VuemojiPicker: {render: () => null}}))
 vi.mock('vue-i18n', async importOriginal => ({
 	...await importOriginal<typeof import('vue-i18n')>(),
-	useI18n: () => ({t: (key: string) => key}),
+	useI18n: () => ({t: (key: string, named?: Record<string, unknown>) => named ? `${key}:${JSON.stringify(named)}` : key}),
 }))
 
 vi.mock('@/i18n/lang/en.json', () => ({default: {}}))
@@ -41,7 +40,10 @@ import EditLabels from '@/components/tasks/partials/EditLabels.vue'
 import Heading from '@/components/tasks/partials/Heading.vue'
 import PercentDoneSelect from '@/components/tasks/partials/PercentDoneSelect.vue'
 import Datepicker from '@/components/input/Datepicker.vue'
+import RelatedTasks from '@/components/tasks/partials/RelatedTasks.vue'
 import RepeatAfter from '@/components/tasks/partials/RepeatAfter.vue'
+import {SHORTCUTS} from '@/constants/shortcuts'
+import {parseKey} from '@/helpers/shortcut'
 import TaskDetailView from './TaskDetailView.vue'
 
 enableAutoUnmount(afterEach)
@@ -86,7 +88,7 @@ function dueDatePicker(wrapper: VueWrapper) {
 	return wrapper.findAllComponents(Datepicker)[0]!
 }
 
-async function mountDetail(taskId = 1, visited: RouteLocationRaw[] = [], stubs: Record<string, unknown> = {}, backdropView?: string) {
+async function mountDetail(taskId = 1, {visited = [], backdropView, stubs = {}}: {visited?: RouteLocationRaw[], backdropView?: string, stubs?: Record<string, unknown>} = {}) {
 	queryClient = new QueryClient({defaultOptions: {queries: {retry: false}}})
 	const router = createRouter({
 		history: createMemoryHistory(),
@@ -110,7 +112,7 @@ async function mountDetail(taskId = 1, visited: RouteLocationRaw[] = [], stubs: 
 		global: {
 			plugins: [createPinia(), router, [VueQueryPlugin, {queryClient}]],
 			mocks: {$t: (key: string) => key},
-			stubs: {Icon: true, XButton: true, Modal: true, CustomTransition: {template: '<div><slot/></div>'}, ...stubs},
+			stubs: {Icon: true, XButton: true, Modal: true, TaskPropertyRow: false, CustomTransition: {template: '<div><slot/></div>'}, ...stubs},
 			directives: {tooltip: () => {}, cy: () => {}, shortcut: () => {}},
 		},
 	})
@@ -227,7 +229,7 @@ describe('TaskDetailView repeat', () => {
 		expect(wrapper.findComponent(RepeatAfter).vm).not.toBe(first)
 	})
 
-	it('clears the rule with an explicit null and hides the editor', async () => {
+	it('clears the rule with an explicit null and keeps the row, now unset', async () => {
 		const wrapper = await mountDetail()
 
 		removeButton(wrapper)!.vm.$emit('click')
@@ -238,7 +240,7 @@ describe('TaskDetailView repeat', () => {
 			{op: 'add', path: '/repeat', value: null},
 			{op: 'add', path: '/repeats_from_current_date', value: false},
 		]))
-		expect(wrapper.findComponent(RepeatAfter).exists()).toBe(false)
+		expect(wrapper.find('.property-repeat').classes()).not.toContain('is-set')
 	})
 })
 
@@ -259,7 +261,7 @@ describe('TaskDetailView mark done and go back', () => {
 
 	it('marks the task done and returns to the project list it was opened from', async () => {
 		projects[5] = {id: 5, title: 'Origin'}
-		const wrapper = await mountDetail(1, ['/projects/5', {path: '/tasks/1', state: {back: '/projects/5'}}])
+		const wrapper = await mountDetail(1, {visited: ['/projects/5', {path: '/tasks/1', state: {back: '/projects/5'}}]})
 
 		pressShiftT()
 		await flushPromises()
@@ -270,7 +272,7 @@ describe('TaskDetailView mark done and go back', () => {
 	})
 
 	it('falls back to the task project when opened directly', async () => {
-		const wrapper = await mountDetail(1, ['/tasks/1'])
+		const wrapper = await mountDetail(1, {visited: ['/tasks/1']})
 
 		pressShiftT()
 		await flushPromises()
@@ -280,7 +282,7 @@ describe('TaskDetailView mark done and go back', () => {
 
 	it('stays on the task when saving fails', async () => {
 		sdk.patchTasksRead.mockRejectedValue(new Error('nope'))
-		const wrapper = await mountDetail(1, ['/tasks/1'])
+		const wrapper = await mountDetail(1, {visited: ['/tasks/1']})
 
 		pressShiftT()
 		await flushPromises()
@@ -292,7 +294,7 @@ describe('TaskDetailView mark done and go back', () => {
 
 	it('does nothing for a task that is already done', async () => {
 		sdk.tasksRead.mockImplementation(async ({path}: {path: {task: number}}) => ({data: serverTask(path.task, {done: true})}))
-		const wrapper = await mountDetail(1, ['/tasks/1'])
+		const wrapper = await mountDetail(1, {visited: ['/tasks/1']})
 
 		pressShiftT()
 		await flushPromises()
@@ -302,96 +304,134 @@ describe('TaskDetailView mark done and go back', () => {
 	})
 })
 
-describe('TaskDetailView empty repeat field', () => {
-	beforeEach(() => {
+describe('TaskDetailView repeat row', () => {
+	const rule = {freq: 'weekly', interval: 2}
+
+	const RepeatAfterStub = {
+		name: 'RepeatAfter',
+		props: ['modelValue', 'save', 'writeOutcome', 'disabled', 'startOpen'],
+		setup(_: unknown, {expose}: SetupContext) {
+			expose({cancelPreview: () => {}, focus: () => {}})
+			return () => null
+		},
+	}
+
+	function serve(overrides: Record<string, unknown> = {}) {
 		sdk.tasksRead.mockReset()
-		sdk.tasksRead.mockImplementation(async ({path}: {path: {task: number}}) => ({data: serverTask(path.task)}))
+		sdk.tasksRead.mockImplementation(async ({path}: {path: {task: number}}) => ({data: serverTask(path.task, overrides)}))
 		sdk.patchTasksRead.mockReset()
-		sdk.patchTasksRead.mockImplementation(async () => ({data: serverTask(1, {percent_done: 0.9})}))
-	})
-
-	async function setRepeat(wrapper: VueWrapper) {
-		// XButton is registered globally in the app, so here it is a stub found by name.
-		wrapper.findAllComponents({name: 'XButton'}).find(button => button.attributes('icon') === 'history')!.vm.$emit('click')
-		await flushPromises()
+		sdk.patchTasksRead.mockImplementation(async () => ({data: serverTask(1, overrides)}))
 	}
 
-	function repeatOps() {
-		return sdk.patchTasksRead.mock.calls
-			.flatMap(([options]) => (options as {body: {path: string, value: unknown}[]}).body)
-			.filter(op => op.path === '/repeat')
+	function editor(wrapper: VueWrapper) {
+		return wrapper.findComponent({name: 'RepeatAfter'})
 	}
 
-	it('opens the editor that "Set Repeat" puts on screen', async () => {
-		// startOpen only matters when the editor mounts, so record it there.
-		const mountedOpen: boolean[] = []
-		const RepeatAfterStub = {
-			name: 'RepeatAfter',
-			props: ['modelValue', 'disabled', 'startOpen'],
-			setup(props: {startOpen: boolean}) {
-				mountedOpen.push(props.startOpen)
-				return () => null
-			},
-		}
-		const wrapper = await mountDetail(1, [], {RepeatAfter: RepeatAfterStub})
-		expect(mountedOpen).toEqual([])
+	function removeButton(wrapper: VueWrapper) {
+		return wrapper.findAllComponents({name: 'BaseButton'})
+			.find(button => button.attributes('aria-label') === 'task.detail.removeRepeat')
+	}
 
-		await setRepeat(wrapper)
+	function pressLabelsShortcut(target: EventTarget = document.body) {
+		const {code} = parseKey(SHORTCUTS.taskDetail.labels)
+		const event = new KeyboardEvent('keydown', {key: code, code, bubbles: true, cancelable: true})
+		target.dispatchEvent(event)
+		return event
+	}
 
-		expect(mountedOpen).toEqual([true])
+	it('hands the editor its save, outcome and write access', async () => {
+		serve({repeat: rule})
+		const wrapper = await mountDetail(1, {stubs: {RepeatAfter: RepeatAfterStub}})
+
+		expect(editor(wrapper).props('save')).toBeTypeOf('function')
+		expect(editor(wrapper).props('writeOutcome')).toBeNull()
+		expect(editor(wrapper).props('disabled')).toBe(false)
+		expect(editor(wrapper).props('startOpen')).toBeFalsy()
+		expect(wrapper.find('.property-repeat').classes()).toContain('is-set')
 	})
 
-	it('stays while the editor is open across a save of another field, which carries no repeat', async () => {
-		const wrapper = await mountDetail()
-		await setRepeat(wrapper)
-		wrapper.findComponent(RepeatAfter).vm.$emit('update:open', true)
+	it('offers the empty row to someone who can edit', async () => {
+		serve({repeat: null})
+		const wrapper = await mountDetail(1, {stubs: {RepeatAfter: RepeatAfterStub}})
 
-		wrapper.findComponent(PercentDoneSelect).vm.$emit('update:modelValue', 0.9)
-		await flushPromises()
-
-		expect(sdk.patchTasksRead).toHaveBeenCalledOnce()
-		expect(repeatOps().every(op => op.value === null)).toBe(true)
-		expect(wrapper.findComponent(RepeatAfter).exists()).toBe(true)
+		expect(editor(wrapper).exists()).toBe(true)
+		expect(wrapper.find('.property-repeat').classes()).not.toContain('is-set')
+		expect(removeButton(wrapper)).toBeUndefined()
 	})
 
-	it('goes away on the next save once the editor closed without a repeat', async () => {
-		const wrapper = await mountDetail()
-		await setRepeat(wrapper)
-		wrapper.findComponent(RepeatAfter).vm.$emit('update:open', true)
-		wrapper.findComponent(RepeatAfter).vm.$emit('update:open', false)
+	it('lets a write-capable link share edit', async () => {
+		serve({repeat: rule, max_permission: 1})
+		const wrapper = await mountDetail(1, {stubs: {RepeatAfter: RepeatAfterStub}})
 
-		wrapper.findComponent(PercentDoneSelect).vm.$emit('update:modelValue', 0.9)
-		await flushPromises()
-
-		expect(wrapper.findComponent(RepeatAfter).exists()).toBe(false)
+		expect(editor(wrapper).props('disabled')).toBe(false)
 	})
 
-	it('stays while the editor is open across a title save, which carries no repeat', async () => {
-		sdk.patchTasksRead.mockImplementation(async () => ({data: serverTask(1, {title: 'Renamed'})}))
-		const wrapper = await mountDetail(1, [], {Heading: false, BaseButton: false})
-		await setRepeat(wrapper)
-		wrapper.findComponent(RepeatAfter).vm.$emit('update:open', true)
+	it('shows a stored rule to a read-only viewer without letting them edit or remove it', async () => {
+		serve({repeat: rule, max_permission: 0})
+		const wrapper = await mountDetail(1, {stubs: {RepeatAfter: RepeatAfterStub}})
 
-		const title = wrapper.findComponent(Heading).find('h1')
-		title.element.textContent = 'Renamed'
-		await title.trigger('blur')
+		expect(wrapper.find('.property-repeat').classes()).toContain('is-set')
+		expect(editor(wrapper).props('disabled')).toBe(true)
+		expect(removeButton(wrapper)).toBeUndefined()
+	})
+
+	it('hides the row from a read-only viewer when there is no rule', async () => {
+		serve({repeat: null, max_permission: 0})
+		const wrapper = await mountDetail(1, {stubs: {RepeatAfter: RepeatAfterStub}})
+
+		expect(wrapper.find('.property-repeat').exists()).toBe(false)
+	})
+
+	it('treats a locked projection with no frequency as a stored rule', async () => {
+		serve({repeat: {read_only: true}})
+		const wrapper = await mountDetail(1, {stubs: {RepeatAfter: RepeatAfterStub}})
+
+		expect(wrapper.find('.property-repeat').classes()).toContain('is-set')
+		expect(removeButton(wrapper)).toBeDefined()
+	})
+
+	it('shows a locked projection with no frequency to a read-only viewer', async () => {
+		serve({repeat: {read_only: true}, max_permission: 0})
+		const wrapper = await mountDetail(1, {stubs: {RepeatAfter: RepeatAfterStub}})
+
+		expect(wrapper.find('.property-repeat').classes()).toContain('is-set')
+		expect(editor(wrapper).props('disabled')).toBe(true)
+	})
+
+	it('runs task shortcuts while the editor is closed', async () => {
+		serve({repeat: rule})
+		await mountDetail(1, {stubs: {RepeatAfter: RepeatAfterStub}})
+
+		expect(pressLabelsShortcut().defaultPrevented).toBe(true)
+	})
+
+	it('keeps task shortcuts from acting behind the open editor, from a focused preset button too', async () => {
+		serve({repeat: rule})
+		const wrapper = await mountDetail(1, {stubs: {RepeatAfter: RepeatAfterStub}})
+		editor(wrapper).vm.$emit('update:open', true)
 		await flushPromises()
+		const preset = document.body.appendChild(document.createElement('button'))
+		preset.focus()
 
-		expect(sdk.patchTasksRead).toHaveBeenCalledOnce()
-		expect(sdk.patchTasksRead.mock.calls[0]![0].body).toContainEqual({op: 'add', path: '/title', value: 'Renamed'})
-		expect(repeatOps().every(op => op.value === null)).toBe(true)
-		expect(wrapper.findComponent(RepeatAfter).exists()).toBe(true)
+		expect(pressLabelsShortcut(preset).defaultPrevented).toBe(false)
+
+		preset.remove()
+		editor(wrapper).vm.$emit('update:open', false)
+		await flushPromises()
+		expect(pressLabelsShortcut().defaultPrevented).toBe(true)
 	})
 
 	it('does not carry an open editor over to the next task', async () => {
-		const wrapper = await mountDetail()
-		await setRepeat(wrapper)
-		wrapper.findComponent(RepeatAfter).vm.$emit('update:open', true)
+		serve({repeat: rule})
+		const wrapper = await mountDetail(1, {stubs: {RepeatAfter: RepeatAfterStub}})
+		const first = editor(wrapper).vm
+		editor(wrapper).vm.$emit('update:open', true)
 
 		await wrapper.setProps({taskId: 2})
 		await flushPromises()
 
-		expect(wrapper.findComponent(RepeatAfter).exists()).toBe(false)
+		expect(editor(wrapper).vm).not.toBe(first)
+		expect(pressLabelsShortcut().defaultPrevented).toBe(true)
 	})
 })
 
@@ -442,7 +482,7 @@ describe('TaskDetailView repeat save', () => {
 	}
 
 	it('sends the fixed time and no due date when the editor saves a rule on an undated task, then shows the server\'s date once', async () => {
-		const wrapper = await mountDetail(1, [], {RepeatAfter: RepeatAfterStub})
+		const wrapper = await mountDetail(1, {stubs: {RepeatAfter: RepeatAfterStub}})
 
 		await expect(saveFromEditor(wrapper, {initialDueTime: '09:00'})).resolves.toEqual({ok: true, outcome: {dueDateSource: 'generated', reason: undefined}})
 		await flushPromises()
@@ -464,7 +504,7 @@ describe('TaskDetailView repeat save', () => {
 
 	it('passes on the server\'s reason when it found no date', async () => {
 		sdk.patchTasksRead.mockImplementation(async () => ({data: serverTask(1, {due_date: null, repeat: rule, reason: 'until_passed'})}))
-		const wrapper = await mountDetail(1, [], {RepeatAfter: RepeatAfterStub})
+		const wrapper = await mountDetail(1, {stubs: {RepeatAfter: RepeatAfterStub}})
 
 		await saveFromEditor(wrapper, {initialDueTime: '09:00'})
 		await flushPromises()
@@ -474,7 +514,7 @@ describe('TaskDetailView repeat save', () => {
 	})
 
 	it('forgets the notice when another task opens', async () => {
-		const wrapper = await mountDetail(1, [], {RepeatAfter: RepeatAfterStub})
+		const wrapper = await mountDetail(1, {stubs: {RepeatAfter: RepeatAfterStub}})
 		await saveFromEditor(wrapper, {initialDueTime: '09:00'})
 		await flushPromises()
 
@@ -487,7 +527,7 @@ describe('TaskDetailView repeat save', () => {
 
 	it('keeps the task and shows no notice when the save changed nothing', async () => {
 		sdk.patchTasksRead.mockResolvedValue({data: undefined, error: '', response: {status: 304}})
-		const wrapper = await mountDetail(1, [], {RepeatAfter: RepeatAfterStub})
+		const wrapper = await mountDetail(1, {stubs: {RepeatAfter: RepeatAfterStub}})
 
 		await expect(saveFromEditor(wrapper, {initialDueTime: '09:00'}, {freq: 'weekly'})).resolves.toMatchObject({ok: true})
 		await flushPromises()
@@ -498,7 +538,7 @@ describe('TaskDetailView repeat save', () => {
 
 	it('tells the editor a failed save failed, so it keeps the draft', async () => {
 		sdk.patchTasksRead.mockRejectedValue(new Error('nope'))
-		const wrapper = await mountDetail(1, [], {RepeatAfter: RepeatAfterStub})
+		const wrapper = await mountDetail(1, {stubs: {RepeatAfter: RepeatAfterStub}})
 
 		await expect(saveFromEditor(wrapper, {initialDueTime: '09:00'})).resolves.toMatchObject({ok: false})
 		expect(message.error).toHaveBeenCalledTimes(1)
@@ -507,7 +547,7 @@ describe('TaskDetailView repeat save', () => {
 	})
 
 	it('sends no initial due time on a title save', async () => {
-		const wrapper = await mountDetail(1, [], {RepeatAfter: RepeatAfterStub, Heading: false, BaseButton: false})
+		const wrapper = await mountDetail(1, {stubs: {RepeatAfter: RepeatAfterStub, Heading: false, BaseButton: false}})
 
 		const title = wrapper.findComponent(Heading).find('h1')
 		title.element.textContent = 'Renamed'
@@ -521,7 +561,7 @@ describe('TaskDetailView repeat save', () => {
 
 	it('sends no initial due time when the clear-date button clears a repeating task\'s date', async () => {
 		sdk.tasksRead.mockImplementation(async ({path}: {path: {task: number}}) => ({data: serverTask(path.task, {repeat: rule})}))
-		const wrapper = await mountDetail(1, [], {RepeatAfter: RepeatAfterStub})
+		const wrapper = await mountDetail(1, {stubs: {RepeatAfter: RepeatAfterStub}})
 
 		wrapper.findAllComponents({name: 'BaseButton'})
 			.find(button => button.attributes('aria-label') === 'task.detail.removeDueDate')!
@@ -533,7 +573,7 @@ describe('TaskDetailView repeat save', () => {
 	})
 
 	it('sends no initial due time when an undated repeating task is marked done', async () => {
-		const wrapper = await mountDetail(1, ['/tasks/1'], {RepeatAfter: RepeatAfterStub})
+		const wrapper = await mountDetail(1, {visited: ['/tasks/1'], stubs: {RepeatAfter: RepeatAfterStub}})
 
 		document.body.dispatchEvent(new KeyboardEvent('keydown', {code: 'KeyT', key: 'T', shiftKey: true, bubbles: true}))
 		await flushPromises()
@@ -568,7 +608,7 @@ describe('TaskDetailView in a trashed project', () => {
 			detail: 'project in trash',
 			details: inTrash,
 		}))
-		const wrapper = await mountDetail(1, ['/tasks/1'], {}, backdropView)
+		const wrapper = await mountDetail(1, {visited: ['/tasks/1'], backdropView})
 
 		expect(message.error).not.toHaveBeenCalled()
 		expect(wrapper.findComponent(ProjectInTrashNotice).props('inTrash')).toEqual(inTrash)
@@ -607,7 +647,7 @@ describe('TaskDetailView in a trashed project', () => {
 			detail: 'task in trash',
 			details: taskInTrash,
 		}))
-		const wrapper = await mountDetail(1, ['/tasks/1'])
+		const wrapper = await mountDetail(1, {visited: ['/tasks/1']})
 		const projectNotice = wrapper.findComponent(ProjectInTrashNotice).element as HTMLElement
 		projectNotice.tabIndex = -1
 		projectNotice.focus()
@@ -618,5 +658,55 @@ describe('TaskDetailView in a trashed project', () => {
 
 		expect(wrapper.findComponent(TaskInTrashNotice).props('inTrash')).toEqual(taskInTrash)
 		expect(document.activeElement).toBe(wrapper.element)
+	})
+})
+
+describe('TaskDetailView property sidebar', () => {
+	beforeEach(() => {
+		sdk.tasksRead.mockReset()
+		sdk.patchTasksRead.mockReset()
+	})
+
+	function serve(overrides: Record<string, unknown> = {}) {
+		sdk.tasksRead.mockImplementation(async ({path}: {path: {task: number}}) => ({data: serverTask(path.task, overrides)}))
+		sdk.patchTasksRead.mockImplementation(async () => ({data: serverTask(1, overrides)}))
+	}
+
+	const renderButtons = {BaseButton: {template: '<button><slot/></button>'}}
+
+	it('keeps a section the user opened visible after saving another field', async () => {
+		serve()
+		const wrapper = await mountDetail()
+		expect(wrapper.findComponent(RelatedTasks).exists()).toBe(false)
+
+		document.body.dispatchEvent(new KeyboardEvent('keydown', {code: 'KeyR', key: 'r', bubbles: true}))
+		await flushPromises()
+		expect(wrapper.findComponent(RelatedTasks).exists()).toBe(true)
+
+		wrapper.findComponent(PercentDoneSelect).vm.$emit('update:modelValue', 0.9)
+		await flushPromises()
+
+		expect(sdk.patchTasksRead).toHaveBeenCalledOnce()
+		expect(wrapper.findComponent(RelatedTasks).exists()).toBe(true)
+	})
+
+	it('shows every property row to users who can edit the task', async () => {
+		serve({due_date: '', labels: []})
+		const wrapper = await mountDetail()
+
+		expect(wrapper.find('.property-due-date').exists()).toBe(true)
+		expect(wrapper.find('.property-labels').exists()).toBe(true)
+		expect(wrapper.find('.property-due-date').classes()).not.toContain('is-set')
+	})
+
+	it('only shows rows with a value to read-only users', async () => {
+		serve({max_permission: 0, labels: []})
+		const wrapper = await mountDetail()
+
+		expect(wrapper.find('.property-due-date').classes()).toContain('is-set')
+		expect(wrapper.find('.property-percent-done').exists()).toBe(true)
+		expect(wrapper.find('.property-labels').exists()).toBe(false)
+		expect(wrapper.find('.property-priority').exists()).toBe(false)
+		expect(wrapper.find('.sidebar-toolbar').exists()).toBe(false)
 	})
 })

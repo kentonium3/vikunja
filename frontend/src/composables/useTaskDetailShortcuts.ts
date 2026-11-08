@@ -10,6 +10,8 @@ interface UseTaskDetailShortcutsOptions {
 	taskTitle: () => string
 	onSave: () => void
 	onDoneAndBack: () => void
+	// While something on top of the task owns the keyboard, the task must not act behind it.
+	isBlocked?: () => boolean
 }
 
 async function copySavely(value: string) {
@@ -26,6 +28,7 @@ export function useTaskDetailShortcuts({
 	taskTitle,
 	onSave,
 	onDoneAndBack,
+	isBlocked,
 }: UseTaskDetailShortcutsOptions) {
 	const dotKeyPressedTimes = ref(0)
 	const dotKeyCopyValue = ref('')
@@ -44,6 +47,8 @@ export function useTaskDetailShortcuts({
 	async function handleTaskHotkey(event: KeyboardEvent) {
 		const shortcutString = eventToShortcutString(event)
 		if (!shortcutString) return
+
+		if (isBlocked?.()) return
 
 		if (shortcutString === 'Control+KeyS' || shortcutString === 'Meta+KeyS') {
 			event.preventDefault()
