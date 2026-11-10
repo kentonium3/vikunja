@@ -50,6 +50,8 @@ import {computed, onScopeDispose, ref, watch, watchEffect} from 'vue'
 import {onClickOutside, onKeyStroke} from '@vueuse/core'
 import {autoUpdate, computePosition, flip, offset, shift, size, type Placement} from '@floating-ui/dom'
 
+import {appTopInset} from '@/composables/useDockAppOffset'
+
 import Modal from '@/components/misc/Modal.vue'
 import {useIsMobile} from '@/composables/useIsMobile'
 import {useInputModality} from '@/helpers/inputModality'
@@ -58,12 +60,15 @@ const props = withDefaults(defineProps<{
 	open?: boolean
 	// Anchors the popup to `anchor` with floating-ui (flips and shifts to stay on screen).
 	placement?: Placement
+	// When neither side fits, open on the side with more room instead of the requested one.
+	preferLargerSide?: boolean
 	anchor?: HTMLElement | null
 	sheetOnMobile?: boolean
 	sheetTitle?: string
 }>(), {
 	open: false,
 	placement: undefined,
+	preferLargerSide: false,
 	anchor: null,
 	sheetOnMobile: false,
 	sheetTitle: '',
@@ -233,6 +238,7 @@ async function updatePosition() {
 		return
 	}
 	let availableBlockSize = 0
+	const padding = {...VIEWPORT_PADDING, top: VIEWPORT_PADDING.top + appTopInset()}
 	const {x, y} = await computePosition(props.anchor, popup.value, {
 		placement: props.placement,
 		strategy: 'fixed',
@@ -241,10 +247,10 @@ async function updatePosition() {
 		// left, so it scrolls inside itself instead of overflowing the viewport.
 		middleware: [
 			offset(4),
-			flip({padding: VIEWPORT_PADDING, fallbackStrategy: 'initialPlacement'}),
-			shift({padding: VIEWPORT_PADDING}),
+			flip({padding, fallbackStrategy: props.preferLargerSide ? 'bestFit' : 'initialPlacement'}),
+			shift({padding}),
 			size({
-				padding: VIEWPORT_PADDING,
+				padding,
 				apply: ({availableHeight}) => {
 					availableBlockSize = availableHeight
 				},
