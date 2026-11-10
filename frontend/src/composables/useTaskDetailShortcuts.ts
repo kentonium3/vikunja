@@ -48,13 +48,14 @@ export function useTaskDetailShortcuts({
 		const shortcutString = eventToShortcutString(event)
 		if (!shortcutString) return
 
-		if (isBlocked?.()) return
-
 		if (shortcutString === 'Control+KeyS' || shortcutString === 'Meta+KeyS') {
 			event.preventDefault()
+			if (isBlocked?.()) return
 			onSave()
 			return
 		}
+
+		if (isBlocked?.()) return
 
 		const target = event.target as HTMLElement
 

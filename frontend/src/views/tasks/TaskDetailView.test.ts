@@ -1,5 +1,5 @@
 import {createPinia} from 'pinia'
-import type {SetupContext} from 'vue'
+import {ref, type SetupContext} from 'vue'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {QueryClient, VueQueryPlugin} from '@tanstack/vue-query'
 import {enableAutoUnmount, flushPromises, shallowMount, type VueWrapper} from '@vue/test-utils'
@@ -23,7 +23,10 @@ vi.mock('@/composables/useProjects', () => ({useProjects: () => ({projects})}))
 vi.mock('@/composables/useLabels', () => ({useLabels: () => ({filterLabelsByQuery: () => [], isPending: {value: false}, getLabelById: vi.fn()})}))
 vi.mock('vue-i18n', async importOriginal => ({
 	...await importOriginal<typeof import('vue-i18n')>(),
-	useI18n: () => ({t: (key: string, named?: Record<string, unknown>) => named ? `${key}:${JSON.stringify(named)}` : key}),
+	useI18n: () => ({
+		t: (key: string, named?: Record<string, unknown>) => named ? `${key}:${JSON.stringify(named)}` : key,
+		locale: ref('en'),
+	}),
 }))
 
 vi.mock('@/i18n/lang/en.json', () => ({default: {}}))
@@ -359,11 +362,29 @@ describe('TaskDetailView repeat row', () => {
 		expect(removeButton(wrapper)).toBeUndefined()
 	})
 
-	it('lets a write-capable link share edit', async () => {
-		serve({repeat: rule, max_permission: 1})
-		const wrapper = await mountDetail(1, {stubs: {RepeatAfter: RepeatAfterStub}})
+	it.each([
+		{permission: 0, canEdit: false},
+		{permission: 1, canEdit: true},
+	])('enforces repeat editor access for a link share with permission $permission', async ({permission, canEdit}) => {
+		serve({repeat: rule, max_permission: permission})
+		const wrapper = await mountDetail(1, {stubs: {
+			RepeatAfter: false,
+			SimpleButton: false,
+			BaseButton: false,
+			Popup: {
+				props: ['open'],
+				template: '<div><slot name="trigger" :toggle="() => $emit(\'update:open\', !open)" /></div>',
+			},
+		}})
+		const trigger = editor(wrapper).find<HTMLButtonElement>('.repeat-field-trigger')
 
-		expect(editor(wrapper).props('disabled')).toBe(false)
+		expect(trigger.element.disabled).toBe(!canEdit)
+		trigger.element.click()
+		await flushPromises()
+
+		expect(trigger.attributes('aria-expanded')).toBe(String(canEdit))
+		expect(editor(wrapper).emitted('update:open') ?? []).toEqual(canEdit ? [[true]] : [])
+		expect(sdk.patchTasksRead).not.toHaveBeenCalled()
 	})
 
 	it('shows a stored rule to a read-only viewer without letting them edit or remove it', async () => {
@@ -388,6 +409,17 @@ describe('TaskDetailView repeat row', () => {
 
 		expect(wrapper.find('.property-repeat').classes()).toContain('is-set')
 		expect(removeButton(wrapper)).toBeDefined()
+
+		removeButton(wrapper)!.vm.$emit('click')
+		await flushPromises()
+
+		expect(sdk.patchTasksRead).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+			path: {task: 1},
+			body: expect.arrayContaining([
+				{op: 'add', path: '/repeat', value: null},
+				{op: 'add', path: '/repeats_from_current_date', value: false},
+			]),
+		}))
 	})
 
 	it('shows a locked projection with no frequency to a read-only viewer', async () => {
