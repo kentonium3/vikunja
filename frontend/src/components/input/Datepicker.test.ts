@@ -24,9 +24,9 @@ const PopupStub = defineComponent({
 
 type DatepickerVm = {open: () => void}
 
-function mountPicker(disabled: boolean) {
+function mountPicker(disabled: boolean, compact?: boolean) {
 	return mount(Datepicker, {
-		props: {modelValue: null, disabled},
+		props: {modelValue: null, disabled, compact},
 		attachTo: document.body,
 		global: {
 			plugins: [i18n],
@@ -180,6 +180,21 @@ describe('Datepicker open()', () => {
 		await nextTick()
 		await wrapper.setProps({disabled: false})
 		expect(isOpen(wrapper)).toBe(false)
+		wrapper.unmount()
+	})
+})
+
+describe('Datepicker layout', () => {
+	it.each([
+		[true, 'chips', true],
+		[false, 'sidebar', false],
+		[undefined, 'sidebar', false],
+	])('with compact %s uses the %s layout', async (compact, layout, narrow) => {
+		const wrapper = mountPicker(false, compact)
+		await requestOpen(wrapper)
+
+		expect(wrapper.find('datepicker-inline-stub').attributes('shortcutslayout')).toBe(layout)
+		expect(wrapper.find('.datepicker-popup').classes('datepicker-popup--compact')).toBe(narrow)
 		wrapper.unmount()
 	})
 })

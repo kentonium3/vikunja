@@ -362,6 +362,7 @@
 							<Datepicker
 								ref="dueDatePicker"
 								v-model="dueDateInput"
+								compact
 								aria-labelledby="task-property-due-date-label"
 								:choose-date-label="$t('task.detail.chooseDueDate')"
 								:empty-label="$t('misc.notSet')"
@@ -382,6 +383,7 @@
 						>
 							<Datepicker
 								v-model="startDateInput"
+								compact
 								aria-labelledby="task-property-start-date-label"
 								:choose-date-label="$t('task.detail.chooseStartDate')"
 								:empty-label="$t('misc.notSet')"
@@ -402,6 +404,7 @@
 						>
 							<Datepicker
 								v-model="endDateInput"
+								compact
 								aria-labelledby="task-property-end-date-label"
 								:choose-date-label="$t('task.detail.chooseEndDate')"
 								:empty-label="$t('misc.notSet')"
@@ -422,6 +425,7 @@
 								:ref="e => setFieldRef('reminders', e)"
 								v-model="task.reminders"
 								:default-relative-to="remindersDefaultRelativeTo"
+								compact
 								:disabled="!canWrite"
 								@update:modelValue="saveTask()"
 							/>
