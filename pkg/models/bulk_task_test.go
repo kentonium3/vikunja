@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"xorm.io/builder"
+	"xorm.io/xorm"
 )
 
 func TestBulkTask_Update(t *testing.T) {
@@ -173,6 +174,25 @@ func TestBulkTask_Update(t *testing.T) {
 		require.Len(t, bt.Tasks, 2)
 		assert.NotZero(t, bt.Tasks[0].DoneAt)
 		assert.NotZero(t, bt.Tasks[1].DoneAt)
+	})
+
+	t.Run("update recurrence via the public repeat field", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+
+		bt := &BulkTask{
+			TaskIDs: []int64{1, 3},
+			Fields:  []string{"repeat"},
+			Values:  &Task{Repeat: &TaskRepeat{Freq: "weekly", Interval: 1}},
+		}
+
+		err := bt.Update(s, u)
+		require.NoError(t, err)
+		require.NoError(t, s.Commit())
+
+		db.AssertExists(t, "tasks", map[string]interface{}{"id": 1, "repeats": "FREQ=WEEKLY;INTERVAL=1"}, false)
+		db.AssertExists(t, "tasks", map[string]interface{}{"id": 3, "repeats": "FREQ=WEEKLY;INTERVAL=1"}, false)
 	})
 
 	t.Run("bulk update without assignees field keeps assignees", func(t *testing.T) {
@@ -353,5 +373,20 @@ func TestBulkTask_Update(t *testing.T) {
 		require.Error(t, err)
 		var expectedErr ErrInvalidTaskColumn
 		assert.ErrorAs(t, err, &expectedErr)
+	})
+}
+
+func TestBulkTask_UpdateCompletionBuckets(t *testing.T) {
+	testTaskUpdateCompletionBuckets(t, func(t *testing.T, s *xorm.Session, task *Task) *Task {
+		bt := &BulkTask{TaskIDs: []int64{task.ID}, Fields: []string{"done"}, Values: &Task{Done: task.Done}}
+		stored, err := GetTaskSimple(s, &Task{ID: task.ID})
+		require.NoError(t, err)
+		if task.Repeats != stored.Repeats {
+			bt.Fields = append(bt.Fields, "repeats")
+			bt.Values.Repeats = task.Repeats
+		}
+		require.NoError(t, bt.Update(s, &user.User{ID: 1}))
+		require.Len(t, bt.Tasks, 1)
+		return bt.Tasks[0]
 	})
 }
