@@ -1,9 +1,11 @@
 <template>
 	<div class="datepicker">
 		<Popup
+			ref="popupComponent"
 			v-model:open="show"
 			placement="bottom-start"
 			:anchor="triggerEl"
+			:prefer-larger-side="compact"
 			sheet-on-mobile
 			:sheet-title="dialogTitle"
 		>
@@ -37,6 +39,7 @@
 					:model-value="date"
 					:show-shortcuts="showShortcuts"
 					:min-date="minDate"
+					:compact="compact"
 					:role="isMobile ? undefined : 'dialog'"
 					:aria-label="isMobile ? undefined : dialogTitle"
 					tabindex="-1"
@@ -49,7 +52,7 @@
 </template>
 
 <script setup lang="ts">
-import {computed, ref, toRef, watch, nextTick, useId} from 'vue'
+import {computed, onBeforeUnmount, ref, toRef, watch, nextTick, useId} from 'vue'
 import {useI18n} from 'vue-i18n'
 
 import BaseButton from '@/components/base/BaseButton.vue'
@@ -71,6 +74,8 @@ const props = withDefaults(defineProps<{
 	emptyLabel?: string,
 	minDate?: Date | null,
 	ariaLabelledby?: string,
+	// Keeps the open picker narrow, for fields beside content it must not cover.
+	compact?: boolean,
 }>(), {
 	chooseDateLabel: () => {
 		const {t} = useI18n({useScope: 'global'})
@@ -82,6 +87,7 @@ const props = withDefaults(defineProps<{
 	emptyLabel: '',
 	minDate: null,
 	ariaLabelledby: undefined,
+	compact: false,
 })
 
 const emit = defineEmits<{
@@ -131,25 +137,83 @@ const triggerId = useId()
 const triggerButton = ref<InstanceType<typeof SimpleButton> | null>(null)
 const triggerEl = computed<HTMLElement | null>(() => triggerButton.value?.$el ?? null)
 
-watch(show, async (isOpen) => {
-	if (!isOpen) {
-		emitClose()
-		return
-	}
+const popupComponent = ref<InstanceType<typeof Popup> | null>(null)
+
+async function focusTrigger() {
 	await nextTick()
 	if (!isMobile.value) {
 		triggerButton.value?.focus()
 	}
+}
+
+watch(show, async (isOpen) => {
+	forgetOpenRequest()
+	if (!isOpen) {
+		emitClose()
+		return
+	}
+	await focusTrigger()
 })
 
+// `show` can still be true just after the browser light-dismissed the popup: Popup reports that close only
+// once hiding has finished. Setting it again would change nothing, so the popup is asked to open itself.
+function showPopup() {
+	if (!show.value) {
+		show.value = true
+		return
+	}
+	forgetOpenRequest()
+	popupComponent.value?.openPopup()
+	focusTrigger()
+}
+
 function close() {
+	forgetOpenRequest()
 	show.value = false
 }
 
-function open() {
-	if (!props.disabled) {
-		show.value = true
+// A keyboard shortcut can ask while the picker is disabled for a moment (the task is saving). Nothing on
+// screen says why it did nothing, so the request is kept until the picker is enabled again, unless the
+// person has moved on: any key or pointer press, or ten seconds, drops it.
+const OPEN_REQUEST_TTL_MS = 10_000
+let openRequested = false
+let openRequestTimer: ReturnType<typeof setTimeout> | undefined
+
+function forgetOpenRequest() {
+	if (!openRequested) {
+		return
 	}
+	openRequested = false
+	clearTimeout(openRequestTimer)
+	window.removeEventListener('keydown', forgetOpenRequest, true)
+	window.removeEventListener('pointerdown', forgetOpenRequest, true)
+}
+
+function rememberOpenRequest() {
+	if (openRequested) {
+		return
+	}
+	openRequested = true
+	openRequestTimer = setTimeout(forgetOpenRequest, OPEN_REQUEST_TTL_MS)
+	window.addEventListener('keydown', forgetOpenRequest, true)
+	window.addEventListener('pointerdown', forgetOpenRequest, true)
+}
+
+watch(() => props.disabled, disabled => {
+	if (!disabled && openRequested) {
+		forgetOpenRequest()
+		showPopup()
+	}
+})
+
+onBeforeUnmount(forgetOpenRequest)
+
+function open() {
+	if (props.disabled) {
+		rememberOpenRequest()
+		return
+	}
+	showPopup()
 }
 
 function emitClose() {
