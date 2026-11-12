@@ -164,18 +164,18 @@ func updateTaskBucket(s *xorm.Session, a web.Auth, b *TaskBucket) (err error) {
 				}
 				completionZone = resolveTaskZone(s, a, zoneProjectID)
 				updateDone(&oldTask, task, completionZone)
-				// A repeating task doesn't stay in the done bucket; route
-				// it back to the view's default bucket so the user sees
-				// the next iteration waiting in the "To-Do" column.
-				if view.DefaultBucketID != 0 {
-					b.BucketID = view.DefaultBucketID
-				} else {
-					b.BucketID = oldTaskBucket.BucketID
-				}
-				// The task is already in the correct bucket, so there is
-				// nothing to move and no count to bump.
-				if b.BucketID == oldTaskBucket.BucketID {
-					updateBucket = false
+				// Return the structured repeat as advanced by this completion.
+				task.Repeat = taskRepeatFromRRule(task.Repeats)
+				// Only reopened occurrences return to the default or previous bucket.
+				if !task.Done {
+					if view.DefaultBucketID != 0 {
+						b.BucketID = view.DefaultBucketID
+					} else {
+						b.BucketID = oldTaskBucket.BucketID
+					}
+					// The task is already in the correct bucket, so there is
+					// nothing to move and no count to bump.
+					updateBucket = b.BucketID != oldTaskBucket.BucketID
 				}
 			}
 		}
