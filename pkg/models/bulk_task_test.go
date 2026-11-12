@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"xorm.io/builder"
+	"xorm.io/xorm"
 )
 
 func TestBulkTask_Update(t *testing.T) {
@@ -405,5 +406,20 @@ func TestBulkTask_Update(t *testing.T) {
 		require.Error(t, err)
 		var expectedErr ErrInvalidTaskColumn
 		assert.ErrorAs(t, err, &expectedErr)
+	})
+}
+
+func TestBulkTask_UpdateCompletionBuckets(t *testing.T) {
+	testTaskUpdateCompletionBuckets(t, func(t *testing.T, s *xorm.Session, task *Task) *Task {
+		bt := &BulkTask{TaskIDs: []int64{task.ID}, Fields: []string{"done"}, Values: &Task{Done: task.Done}}
+		stored, err := GetTaskSimple(s, &Task{ID: task.ID})
+		require.NoError(t, err)
+		if task.Repeats != stored.Repeats {
+			bt.Fields = append(bt.Fields, "repeats")
+			bt.Values.Repeats = task.Repeats
+		}
+		require.NoError(t, bt.Update(s, &user.User{ID: 1}))
+		require.Len(t, bt.Tasks, 1)
+		return bt.Tasks[0]
 	})
 }

@@ -1703,16 +1703,6 @@ func (t *Task) updateSingleTaskInViews(s *xorm.Session, a web.Auth, fields []str
 		}
 	}
 
-	// Repeating tasks don't stay in the done bucket — route them back
-	// to the default bucket so the next iteration shows up in the
-	// "To-Do" column. See #2573.
-	if t.ProjectID == ot.ProjectID && t.isRepeating() && !ot.Done && t.Done {
-		err = t.moveTaskToDefaultBuckets(s, a, views)
-		if err != nil {
-			return
-		}
-	}
-
 	// Completion steps the rule this update stores. When the same update replaces the rule with a
 	// new one together with done: true, the new rule drives the date step and its COUNT is
 	// decremented; stepping the old one would write the old rule back over the replacement. A
@@ -1737,6 +1727,7 @@ func (t *Task) updateSingleTaskInViews(s *xorm.Session, a web.Auth, fields []str
 
 	// Captured before updateDone reopens the completed repeating task below.
 	repeatingCompleted := completedFrom.isRepeating() && !ot.Done && t.Done
+	completedWithRepeat := (t.isRepeating() || ot.isRepeating()) && !ot.Done && t.Done
 	preRepeatDueDate, preRepeatStartDate, preRepeatEndDate := t.DueDate, t.StartDate, t.EndDate
 	preRepeatDescription := t.Description
 
@@ -1753,6 +1744,20 @@ func (t *Task) updateSingleTaskInViews(s *xorm.Session, a web.Auth, fields []str
 	}
 	if updateDoneAt {
 		colsToUpdate = append(colsToUpdate, "done_at")
+	}
+
+	// Reopened repeating tasks return to the default bucket so the next
+	// iteration shows up in "To-Do" (see #2573). Exhausted tasks stay done
+	// and belong in the done buckets, even when updateDone cleared the rule.
+	if t.ProjectID == ot.ProjectID && completedWithRepeat {
+		if t.Done {
+			err = t.placeTaskInDoneBuckets(s, a, views)
+		} else {
+			err = t.moveTaskToDefaultBuckets(s, a, views)
+		}
+		if err != nil {
+			return
+		}
 	}
 
 	// updateDone reschedules after colsToUpdate was frozen from the caller's field list,
@@ -2016,6 +2021,50 @@ func (t *Task) moveTaskToDoneBuckets(s *xorm.Session, a web.Auth, views []*Proje
 		}
 		err = updateTaskPosition(s, a, &tp)
 		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// placeTaskInDoneBuckets routes an already completed task without running completion
+// again through updateTaskBucket, which would reload and step the stored rule.
+func (t *Task) placeTaskInDoneBuckets(s *xorm.Session, a web.Auth, views []*ProjectView) error {
+	for _, view := range views {
+		if view.DoneBucketID == 0 {
+			continue
+		}
+
+		currentTaskBucket := &TaskBucket{}
+		_, err := s.Where("task_id = ? AND project_view_id = ?", t.ID, view.ID).Get(currentTaskBucket)
+		if err != nil {
+			return err
+		}
+		if currentTaskBucket.BucketID != view.DoneBucketID {
+			bucket, err := getBucketByID(s, view.DoneBucketID)
+			if err != nil {
+				return err
+			}
+			if _, err := checkBucketLimit(s, a, t, bucket, view, 0); err != nil {
+				return err
+			}
+		}
+
+		tb := &TaskBucket{
+			TaskID:        t.ID,
+			ProjectViewID: view.ID,
+			BucketID:      view.DoneBucketID,
+		}
+		if err := tb.upsert(s); err != nil {
+			return err
+		}
+
+		tp := &TaskPosition{
+			TaskID:        t.ID,
+			ProjectViewID: view.ID,
+			Position:      calculateDefaultPosition(t.Index, t.Position),
+		}
+		if err := updateTaskPosition(s, a, tp); err != nil {
 			return err
 		}
 	}

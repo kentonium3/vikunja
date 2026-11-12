@@ -2696,3 +2696,186 @@ func TestCompletionZone_SavedFilterKanban(t *testing.T) {
 	assert.Equal(t, time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC), task.DueDate.UTC(),
 		"the owner's New York calendar, not the server's (2026-10-28)")
 }
+
+// Both full task updates and field-scoped bulk updates must route from the
+// completion's final state, including when exhaustion clears the stored rule.
+func testTaskUpdateCompletionBuckets(t *testing.T, update func(*testing.T, *xorm.Session, *Task) *Task) {
+	for _, tc := range []struct {
+		name     string
+		rule     string
+		newRule  string
+		wasDone  bool
+		wantDone bool
+		wantRule string
+	}{
+		{name: "exhausted COUNT", rule: "FREQ=DAILY;INTERVAL=1;COUNT=1", wantDone: true},
+		{name: "exhausted UNTIL", rule: "FREQ=DAILY;INTERVAL=1;UNTIL=20260101T120000Z", wantDone: true, wantRule: "FREQ=DAILY;INTERVAL=1;UNTIL=20260101T120000Z"},
+		{name: "replace rule and complete exhausted", rule: "FREQ=DAILY;INTERVAL=1;COUNT=3", newRule: "FREQ=DAILY;INTERVAL=1;COUNT=1", wantDone: true},
+		{name: "add rule and complete", newRule: "FREQ=DAILY;INTERVAL=1;COUNT=3", wantDone: true, wantRule: "FREQ=DAILY;INTERVAL=1;COUNT=3"},
+		{name: "COUNT=2 reopens", rule: "FREQ=DAILY;INTERVAL=1;COUNT=2", wantRule: "FREQ=DAILY;INTERVAL=1;COUNT=1"},
+		{name: "non-repeating completion", wantDone: true},
+		{name: "non-repeating reopening", wasDone: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db.LoadAndAssertFixtures(t)
+			s := db.NewSession()
+			defer s.Close()
+			u := &user.User{ID: 1}
+			now := time.Date(2025, time.December, 31, 12, 0, 0, 0, time.UTC)
+			originalNow := timeNow
+			timeNow = func() time.Time { return now }
+			t.Cleanup(func() { timeNow = originalNow })
+			due := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+			_, err := s.ID(28).Cols("repeats", "due_date", "done", "done_at").Update(&Task{
+				Repeats: tc.rule, DueDate: due, Done: tc.wasDone,
+			})
+			require.NoError(t, err)
+			secondView := &ProjectView{
+				Title: "Second Kanban", ProjectID: 1, ViewKind: ProjectViewKindKanban,
+				BucketConfigurationMode: BucketConfigurationModeManual,
+			}
+			require.NoError(t, secondView.Create(s, u))
+			require.NotZero(t, secondView.DefaultBucketID)
+			require.NotZero(t, secondView.DoneBucketID)
+			views := map[int64][2]int64{4: {1, 3}, secondView.ID: {secondView.DefaultBucketID, secondView.DoneBucketID}}
+			// Begin exhausted completions in Default so routing must move them to Done.
+			// Begin recurring reopens and non-recurring reopens in Done.
+			for viewID, buckets := range views {
+				initialBucket := buckets[0]
+				if (tc.rule != "" && !tc.wantDone) || tc.wasDone {
+					initialBucket = buckets[1]
+				}
+				_, err = s.Where("task_id = ? AND project_view_id = ?", 28, viewID).
+					Cols("bucket_id").Update(&TaskBucket{BucketID: initialBucket})
+				require.NoError(t, err)
+			}
+			task, err := GetTaskSimple(s, &Task{ID: 28})
+			require.NoError(t, err)
+			task.Done = !tc.wasDone
+			if tc.newRule != "" {
+				task.Repeats = tc.newRule
+			}
+			returned := update(t, s, &task)
+			require.NoError(t, s.Commit())
+			stored, err := GetTaskSimple(s, &Task{ID: 28})
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantDone, returned.Done)
+			assert.Equal(t, tc.wantDone, stored.Done)
+			assert.Equal(t, tc.wantRule, stored.Repeats)
+			assert.Equal(t, tc.wantRule, returned.Repeats)
+			assert.Equal(t, taskRepeatFromRRule(tc.wantRule), returned.Repeat)
+			wantDue := due
+			if tc.rule != "" && !tc.wantDone {
+				wantDue = due.AddDate(0, 0, 1)
+			}
+			assert.Equal(t, wantDue.Unix(), stored.DueDate.Unix())
+			assert.Equal(t, wantDue.Unix(), returned.DueDate.Unix())
+			for viewID, buckets := range views {
+				wantBucket := buckets[0]
+				if tc.wantDone {
+					wantBucket = buckets[1]
+				}
+				rows := []*TaskBucket{}
+				require.NoError(t, s.Where("task_id = ? AND project_view_id = ?", 28, viewID).Find(&rows))
+				require.Len(t, rows, 1)
+				assert.Equal(t, wantBucket, rows[0].BucketID, "membership in view %d", viewID)
+			}
+		})
+	}
+}
+
+func TestTask_UpdateCompletionBuckets(t *testing.T) {
+	testTaskUpdateCompletionBuckets(t, func(t *testing.T, s *xorm.Session, task *Task) *Task {
+		require.NoError(t, task.Update(s, &user.User{ID: 1}))
+		return task
+	})
+}
+
+func TestTask_UpdateCompletionBucketLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rule string
+		full bool
+	}{
+		{name: "exhausted COUNT full", rule: "FREQ=DAILY;COUNT=1", full: true},
+		{name: "exhausted COUNT with room", rule: "FREQ=DAILY;COUNT=1"},
+		{name: "non-repeating full control", full: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db.LoadAndAssertFixtures(t)
+			s := db.NewSession()
+			defer s.Close()
+			u := &user.User{ID: 1}
+			_, err := s.ID(28).Cols("repeats", "due_date", "done", "done_at").Update(&Task{
+				Repeats: tc.rule, DueDate: time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC),
+			})
+			require.NoError(t, err)
+			view := &ProjectView{
+				Title: "Limited Kanban", ProjectID: 1, ViewKind: ProjectViewKindKanban,
+				BucketConfigurationMode: BucketConfigurationModeManual,
+			}
+			require.NoError(t, view.Create(s, u))
+			_, err = s.ID(3).Cols("limit").Update(&Bucket{Limit: 1})
+			require.NoError(t, err)
+			// Limit the first view so the non-repeating control reaches its limit
+			// check before completion propagates membership to the other view.
+			if tc.full {
+				_, err = s.Where("bucket_id = ? AND task_id != ?", 3, 2).Delete(&TaskBucket{})
+			} else {
+				_, err = s.Where("bucket_id = ?", 3).Delete(&TaskBucket{})
+			}
+			require.NoError(t, err)
+			require.NoError(t, s.Commit())
+			require.NoError(t, s.Close())
+			s = db.NewSession()
+			defer s.Close()
+			bucket, err := getBucketByID(s, 3)
+			require.NoError(t, err)
+			require.EqualValues(t, 1, bucket.Limit)
+			count, err := s.Where("bucket_id = ?", 3).Count(&TaskBucket{})
+			require.NoError(t, err)
+			if tc.full {
+				require.EqualValues(t, 1, count)
+			} else {
+				require.Zero(t, count)
+			}
+
+			task, err := GetTaskSimple(s, &Task{ID: 28})
+			require.NoError(t, err)
+			require.False(t, task.Done)
+			task.Done = true
+			err = task.Update(s, u)
+			if tc.full {
+				require.Error(t, err)
+				assert.True(t, IsErrBucketLimitExceeded(err), "got %v", err)
+				require.NoError(t, s.Rollback())
+			} else {
+				require.NoError(t, err)
+				require.NoError(t, s.Commit())
+			}
+
+			storedSession := db.NewSession()
+			defer storedSession.Close()
+			stored, err := GetTaskSimple(storedSession, &Task{ID: 28})
+			require.NoError(t, err)
+			assert.Equal(t, !tc.full, stored.Done)
+			if tc.full {
+				assert.Zero(t, stored.DoneAt)
+				assert.Equal(t, tc.rule, stored.Repeats)
+			} else {
+				assert.Empty(t, stored.Repeats)
+			}
+			for viewID, buckets := range map[int64][2]int64{4: {1, 3}, view.ID: {view.DefaultBucketID, view.DoneBucketID}} {
+				membership := &TaskBucket{}
+				has, err := storedSession.Where("task_id = ? AND project_view_id = ?", 28, viewID).Get(membership)
+				require.NoError(t, err)
+				require.True(t, has)
+				wantBucket := buckets[0]
+				if !tc.full {
+					wantBucket = buckets[1]
+				}
+				assert.Equal(t, wantBucket, membership.BucketID)
+			}
+		})
+	}
+}
