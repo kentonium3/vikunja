@@ -105,6 +105,9 @@ function confirm() {
 		:deep(.date-shortcuts--chips) {
 			flex-wrap: nowrap;
 			overflow-x: auto;
+			// Chips sit above the calendar, unlike the desktop sidebar. Leave room for
+			// the wrapped time controls and footer in a short window.
+			padding-block: .5rem;
 		}
 	}
 
