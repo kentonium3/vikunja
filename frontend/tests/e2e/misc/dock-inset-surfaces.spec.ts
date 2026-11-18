@@ -14,6 +14,10 @@ const DESKTOP = {
 	width: 1280,
 	height: 720,
 }
+const TALL = {
+	width: 1920,
+	height: 1600,
+}
 const PHONE = {
 	width: 390,
 	height: 844,
@@ -71,6 +75,19 @@ const CSS_ROWS: GuardRow[] = [
 		pre43: 0, // 3f9835b63 AppHeader.vue: inset-block-start: 0
 		dockDelta: 40,
 		layout: 'top',
+	},
+	{
+		id: 'sticky-task-sidebar',
+		file: 'views/tasks/TaskDetailView.vue',
+		selector: '.task-sidebar',
+		property: 'inset-block-start',
+		declaration: '--sidebar-top',
+		viewport: TALL,
+		state: 'task',
+		// Upstream's sticky sidebar clears the 64px header plus a 24px margin.
+		// This tall viewport makes that floor bind instead of the tall-sidebar cap.
+		pre43: 88,
+		dockDelta: 40,
 	},
 	{
 		id: 'header-phone',
@@ -863,17 +880,18 @@ async function checkRow(page: Page, row: GuardRow, dock: boolean, normalPosition
 		expect(Math.abs((await rect(page, anchor)).top - anchorTop)).toBeLessThanOrEqual(0.5)
 		await expect.poll(async () => Math.abs((await rect(page, row.selector)).top - expected)).toBeLessThanOrEqual(0.5)
 		const bounds = await rect(page, row.selector)
-		expect(bounds.bottom).toBeLessThanOrEqual(anchorTop - 4 + 0.5)
 		expect(bounds.height).toBeGreaterThan(100)
 		if (dropdown) {
+			expect(bounds.bottom).toBeLessThanOrEqual(anchorTop - 4 + 0.5)
 			if (!dock) expect(bounds.top).toBeLessThan(40)
 			expect(bounds.top).toBeGreaterThanOrEqual(dock ? 40 : 0)
 			const content = page.locator('.task-actions-menu .dropdown-content')
 			expect(await content.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true)
 		} else {
 			expect(bounds.top).toBeGreaterThanOrEqual(dock ? 104 : 64)
-			expect(Math.abs(bounds.bottom - 256)).toBeLessThanOrEqual(0.5)
-			expect(Math.abs(bounds.height - (256 - expected))).toBeLessThanOrEqual(0.5)
+			// Upstream slides a tall popup over its anchor so the whole viewport is usable.
+			expect(bounds.bottom).toBeGreaterThan(anchorTop)
+			expect(bounds.bottom).toBeLessThanOrEqual(row.viewport.height - 8 + 0.5)
 		}
 	}
 }
