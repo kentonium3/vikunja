@@ -8,6 +8,11 @@
 
 # Vikunja
 
+> [!IMPORTANT]
+> This repository (kentonium3/vikunja) is a downstream distribution of Vikunja that adds RFC 5545 RRULE recurrence for repeating tasks.
+> The current preview build is on the [Releases page](https://github.com/kentonium3/vikunja/releases).
+> It is not an official Vikunja release. The canonical project is [go-vikunja/vikunja](https://github.com/go-vikunja/vikunja).
+
 > The task manager you actually own. 
 
 If Vikunja is useful to you, please consider [supporting the project](https://vikunja.io/support/). You can [buy a coffee](https://www.buymeacoffee.com/kolaente), [sponsor on GitHub](https://github.com/sponsors/kolaente) or buy [a sticker pack](https://vikunja.io/stickers).
