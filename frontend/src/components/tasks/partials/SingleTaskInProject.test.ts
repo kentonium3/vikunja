@@ -257,3 +257,286 @@ describe('an overdue repeating task in the list', () => {
 		expect((repeatIcon!.element as HTMLElement).dataset.tooltip).toBe('task.repeat.describe.weeklyOn|{"n":1,"days":"Friday"}|1')
 	})
 })
+
+// Undo after checking off a task restores the task as it was before the check: open, with the same
+// due date, rule and remaining count. The server keeps a stored COUNT when a save raises it on an
+// otherwise unchanged rule, so a lowered count is restored by clearing the rule and then setting it.
+describe('undo after completing a repeating task', () => {
+	const DUE = '2026-01-01T12:00:00Z'
+	const NEXT_DAY = '2026-01-02T12:00:00Z'
+
+	function repeatOps(call: unknown[]) {
+		const {body} = call[0] as {body: {path: string, value: unknown}[]}
+		return {
+			repeat: body.find(op => op.path === '/repeat'),
+			done: body.find(op => op.path === '/done')?.value,
+			due: body.find(op => op.path === '/due_date')?.value,
+		}
+	}
+
+	async function checkThenUndo(row: ITask, completed: ITask, restoreResponses: Array<ITask | Error>) {
+		const {success} = await import('@/message')
+		vi.mocked(success).mockClear()
+		sdk.patchTasksRead.mockResolvedValueOnce({data: completed})
+		for (const response of restoreResponses) {
+			if (response instanceof Error) sdk.patchTasksRead.mockRejectedValueOnce(response)
+			else sdk.patchTasksRead.mockResolvedValueOnce({data: response})
+		}
+		const wrapper = mountRow(row)
+		wrapper.getComponent({name: 'FancyCheckbox'}).vm.$emit('update:modelValue', true)
+		await flushPromises()
+		await vi.advanceTimersByTimeAsync(300)
+		await flushPromises()
+		await wrapper.setProps({theTask: completed})
+		const actions = vi.mocked(success).mock.calls.at(-1)?.[1] as {callback: () => void}[] | undefined
+		expect(actions?.[0], 'undo action').toBeDefined()
+		actions![0].callback()
+		await flushPromises()
+		await vi.advanceTimersByTimeAsync(0)
+		await flushPromises()
+		return wrapper
+	}
+
+	beforeEach(() => {
+		setActivePinia(createPinia())
+		auth.settings = {timezone: 'UTC', week_start: 1, frontend_settings: {}}
+		sdk.patchTasksRead.mockReset()
+		vi.useFakeTimers({shouldAdvanceTime: true})
+	})
+
+	afterEach(() => {
+		vi.useRealTimers()
+	})
+
+	it('restores the rule of a task whose last occurrence was completed (ends after 1)', async () => {
+		const repeat = {freq: 'daily', interval: 1, count: 1} as TaskRepeat
+		const row = {...theTask, done: false, due_date: DUE, repeat} as ITask
+		const completed = {...theTask, done: true, due_date: DUE} as ITask
+		await checkThenUndo(row, completed, [{...row}])
+
+		expect(sdk.patchTasksRead).toHaveBeenCalledTimes(2)
+		const undo = repeatOps(sdk.patchTasksRead.mock.calls[1])
+		expect(undo.done).toBe(false)
+		expect(undo.due).toBe(DUE)
+		expect(undo.repeat?.value).toEqual(expect.objectContaining({freq: 'daily', count: 1}))
+	})
+
+	it('clears and then sets the rule to restore a lowered count (ends after 2)', async () => {
+		const repeat = {freq: 'daily', interval: 1, count: 2} as TaskRepeat
+		const row = {...theTask, done: false, due_date: DUE, repeat} as ITask
+		const completed = {...theTask, done: false, due_date: NEXT_DAY, repeat: {...repeat, count: 1}} as ITask
+		const cleared = {...theTask, done: false, due_date: DUE} as ITask
+		await checkThenUndo(row, completed, [cleared, {...row}])
+
+		expect(sdk.patchTasksRead).toHaveBeenCalledTimes(3)
+		const clear = repeatOps(sdk.patchTasksRead.mock.calls[1])
+		expect(clear.repeat).toEqual(expect.objectContaining({value: null}))
+		expect(clear.done).toBe(false)
+		expect(clear.due).toBe(DUE)
+		const restore = repeatOps(sdk.patchTasksRead.mock.calls[2])
+		expect(restore.repeat?.value).toEqual(expect.objectContaining({freq: 'daily', count: 2}))
+		expect(restore.done).toBe(false)
+		expect(restore.due).toBe(DUE)
+	})
+
+	it('sends no second save when clearing the rule fails, and shows the error', async () => {
+		const {error} = await import('@/message')
+		vi.mocked(error).mockClear()
+		const repeat = {freq: 'daily', interval: 1, count: 2} as TaskRepeat
+		const row = {...theTask, done: false, due_date: DUE, repeat} as ITask
+		const completed = {...theTask, done: false, due_date: NEXT_DAY, repeat: {...repeat, count: 1}} as ITask
+		await checkThenUndo(row, completed, [new Error('offline')])
+
+		expect(sdk.patchTasksRead).toHaveBeenCalledTimes(2)
+		expect(vi.mocked(error)).toHaveBeenCalled()
+	})
+
+	it('shows the error when setting the rule again fails', async () => {
+		const {error} = await import('@/message')
+		vi.mocked(error).mockClear()
+		const repeat = {freq: 'daily', interval: 1, count: 2} as TaskRepeat
+		const row = {...theTask, done: false, due_date: DUE, repeat} as ITask
+		const completed = {...theTask, done: false, due_date: NEXT_DAY, repeat: {...repeat, count: 1}} as ITask
+		await checkThenUndo(row, completed, [{...theTask, done: false, due_date: DUE} as ITask, new Error('offline')])
+
+		expect(sdk.patchTasksRead).toHaveBeenCalledTimes(3)
+		expect(vi.mocked(error)).toHaveBeenCalled()
+	})
+
+	it('starts setting the rule only after clearing it has finished, judged by the completion response', async () => {
+		const {success} = await import('@/message')
+		vi.mocked(success).mockClear()
+		const repeat = {freq: 'daily', interval: 1, count: 2} as TaskRepeat
+		const row = {...theTask, done: false, due_date: DUE, repeat} as ITask
+		const completed = {...theTask, done: false, due_date: NEXT_DAY, repeat: {...repeat, count: 1}} as ITask
+		const clear = deferred()
+		sdk.patchTasksRead.mockResolvedValueOnce({data: completed})
+		sdk.patchTasksRead.mockReturnValueOnce(clear.promise)
+		sdk.patchTasksRead.mockResolvedValueOnce({data: {...row}})
+		// The row is never replaced with the completion response: the branch must come from the response.
+		const wrapper = mountRow(row)
+		wrapper.getComponent({name: 'FancyCheckbox'}).vm.$emit('update:modelValue', true)
+		await flushPromises()
+		await vi.advanceTimersByTimeAsync(300)
+		await flushPromises()
+		const actions = vi.mocked(success).mock.calls.at(-1)?.[1] as {callback: () => void}[]
+		actions[0].callback()
+		await flushPromises()
+
+		expect(sdk.patchTasksRead).toHaveBeenCalledTimes(2)
+		expect(repeatOps(sdk.patchTasksRead.mock.calls[1]).repeat).toEqual(expect.objectContaining({value: null}))
+
+		clear.resolve({data: {...theTask, done: false, due_date: DUE}})
+		await flushPromises()
+		expect(sdk.patchTasksRead).toHaveBeenCalledTimes(3)
+		expect(repeatOps(sdk.patchTasksRead.mock.calls[2]).repeat?.value).toEqual(expect.objectContaining({count: 2}))
+	})
+
+	it('undoing an earlier check restores that check, not a later one', async () => {
+		const {success} = await import('@/message')
+		vi.mocked(success).mockClear()
+		const repeat = {freq: 'daily', interval: 1, count: 3} as TaskRepeat
+		const first = {...theTask, done: false, due_date: DUE, repeat} as ITask
+		const second = {...theTask, done: false, due_date: NEXT_DAY, repeat: {...repeat, count: 2}} as ITask
+		const third = {...theTask, done: false, due_date: '2026-01-03T12:00:00Z', repeat: {...repeat, count: 1}} as ITask
+		sdk.patchTasksRead.mockResolvedValueOnce({data: second})
+		sdk.patchTasksRead.mockResolvedValueOnce({data: third})
+		sdk.patchTasksRead.mockResolvedValue({data: {...first}})
+		const wrapper = mountRow(first)
+		const checkbox = () => wrapper.getComponent({name: 'FancyCheckbox'}).vm
+		checkbox().$emit('update:modelValue', true)
+		await flushPromises()
+		await vi.advanceTimersByTimeAsync(300)
+		await flushPromises()
+		const firstUndo = (vi.mocked(success).mock.calls.at(-1)?.[1] as {callback: () => void}[])[0]
+		await wrapper.setProps({theTask: second})
+		checkbox().$emit('update:modelValue', true)
+		await flushPromises()
+		await vi.advanceTimersByTimeAsync(300)
+		await flushPromises()
+		await wrapper.setProps({theTask: third})
+
+		firstUndo.callback()
+		await flushPromises()
+
+		expect(sdk.patchTasksRead).toHaveBeenCalledTimes(4)
+		const clear = repeatOps(sdk.patchTasksRead.mock.calls[2])
+		expect(clear.repeat).toEqual(expect.objectContaining({value: null}))
+		expect(clear.due).toBe(DUE)
+		const restore = repeatOps(sdk.patchTasksRead.mock.calls[3])
+		expect(restore.due).toBe(DUE)
+		expect(restore.repeat?.value).toEqual(expect.objectContaining({count: 3}))
+	})
+
+	it('never rewrites a read-only repeat: one save, no clear, the lowered count stays', async () => {
+		const repeat = {freq: 'yearly', interval: 1, count: 3, read_only: true} as TaskRepeat
+		const row = {...theTask, done: false, due_date: DUE, repeat} as ITask
+		const completed = {...theTask, done: false, due_date: NEXT_DAY, repeat: {...repeat, count: 2}} as ITask
+		await checkThenUndo(row, completed, [{...completed}])
+
+		expect(sdk.patchTasksRead).toHaveBeenCalledTimes(2)
+		const undo = repeatOps(sdk.patchTasksRead.mock.calls[1])
+		expect(undo.repeat).toBeUndefined()
+		expect(undo.due).toBe(DUE)
+	})
+
+	it('does not write a read-only repeat back after its last occurrence, even from a stale row', async () => {
+		const {success} = await import('@/message')
+		vi.mocked(success).mockClear()
+		const repeat = {freq: 'yearly', interval: 1, count: 1, read_only: true} as TaskRepeat
+		const row = {...theTask, done: false, due_date: DUE, repeat} as ITask
+		sdk.patchTasksRead.mockResolvedValueOnce({data: {...theTask, done: true, due_date: DUE}})
+		sdk.patchTasksRead.mockResolvedValueOnce({data: {...theTask, done: false, due_date: DUE}})
+		// The row keeps showing the repeat: it is never replaced with the completion response.
+		const wrapper = mountRow(row)
+		wrapper.getComponent({name: 'FancyCheckbox'}).vm.$emit('update:modelValue', true)
+		await flushPromises()
+		await vi.advanceTimersByTimeAsync(300)
+		await flushPromises()
+		const actions = vi.mocked(success).mock.calls.at(-1)?.[1] as {callback: () => void}[]
+		actions[0].callback()
+		await flushPromises()
+
+		expect(sdk.patchTasksRead).toHaveBeenCalledTimes(2)
+		const undo = repeatOps(sdk.patchTasksRead.mock.calls[1])
+		expect(undo.repeat).toBeUndefined()
+		expect(undo.done).toBe(false)
+	})
+
+	it('does not write a read-only repeat back after its last occurrence', async () => {
+		const repeat = {freq: 'yearly', interval: 1, count: 1, read_only: true} as TaskRepeat
+		const row = {...theTask, done: false, due_date: DUE, repeat} as ITask
+		const completed = {...theTask, done: true, due_date: DUE} as ITask
+		await checkThenUndo(row, completed, [{...completed, done: false}])
+
+		expect(sdk.patchTasksRead).toHaveBeenCalledTimes(2)
+		expect(repeatOps(sdk.patchTasksRead.mock.calls[1]).repeat).toBeUndefined()
+	})
+
+	it('a second Undo restores the same state again', async () => {
+		const {success} = await import('@/message')
+		const repeat = {freq: 'daily', interval: 1, count: 2} as TaskRepeat
+		const row = {...theTask, done: false, due_date: DUE, repeat} as ITask
+		const completed = {...theTask, done: false, due_date: NEXT_DAY, repeat: {...repeat, count: 1}} as ITask
+		sdk.patchTasksRead.mockResolvedValue({data: {...row}})
+		await checkThenUndo(row, completed, [])
+		const actions = vi.mocked(success).mock.calls.at(-1)?.[1] as {callback: () => void}[]
+		actions[0].callback()
+		await flushPromises()
+
+		expect(sdk.patchTasksRead).toHaveBeenCalledTimes(5)
+		for (const call of sdk.patchTasksRead.mock.calls.slice(1)) {
+			expect(repeatOps(call).due).toBe(DUE)
+		}
+		expect(repeatOps(sdk.patchTasksRead.mock.calls[4]).repeat?.value).toEqual(expect.objectContaining({count: 2}))
+	})
+
+	it('finishes restoring the rule when the row goes away while clearing it', async () => {
+		const {success} = await import('@/message')
+		vi.mocked(success).mockClear()
+		const repeat = {freq: 'daily', interval: 1, count: 2} as TaskRepeat
+		const row = {...theTask, done: false, due_date: DUE, repeat} as ITask
+		const completed = {...theTask, done: false, due_date: NEXT_DAY, repeat: {...repeat, count: 1}} as ITask
+		const clear = deferred()
+		sdk.patchTasksRead.mockResolvedValueOnce({data: completed})
+		sdk.patchTasksRead.mockReturnValueOnce(clear.promise)
+		sdk.patchTasksRead.mockResolvedValueOnce({data: {...row}})
+		const wrapper = mountRow(row)
+		wrapper.getComponent({name: 'FancyCheckbox'}).vm.$emit('update:modelValue', true)
+		await flushPromises()
+		await vi.advanceTimersByTimeAsync(300)
+		await flushPromises()
+		const actions = vi.mocked(success).mock.calls.at(-1)?.[1] as {callback: () => void}[]
+		actions[0].callback()
+		await flushPromises()
+		wrapper.unmount()
+
+		clear.resolve({data: {...theTask, done: false, due_date: DUE}})
+		await flushPromises()
+		expect(sdk.patchTasksRead).toHaveBeenCalledTimes(3)
+		expect(repeatOps(sdk.patchTasksRead.mock.calls[2]).repeat?.value).toEqual(expect.objectContaining({count: 2}))
+	})
+
+	it('restores a never-ending repeat with one save, as before', async () => {
+		const repeat = {freq: 'daily', interval: 1} as TaskRepeat
+		const row = {...theTask, done: false, due_date: DUE, repeat} as ITask
+		const completed = {...theTask, done: false, due_date: NEXT_DAY, repeat} as ITask
+		await checkThenUndo(row, completed, [{...row}])
+
+		expect(sdk.patchTasksRead).toHaveBeenCalledTimes(2)
+		const undo = repeatOps(sdk.patchTasksRead.mock.calls[1])
+		expect(undo.due).toBe(DUE)
+		expect(undo.repeat?.value).toEqual(expect.objectContaining({freq: 'daily'}))
+	})
+
+	it('reopens a non-repeating task with one save, as before', async () => {
+		const row = {...theTask, done: false, due_date: DUE} as ITask
+		const completed = {...theTask, done: true, due_date: DUE} as ITask
+		await checkThenUndo(row, completed, [{...row}])
+
+		expect(sdk.patchTasksRead).toHaveBeenCalledTimes(2)
+		const undo = repeatOps(sdk.patchTasksRead.mock.calls[1])
+		expect(undo.done).toBe(false)
+		expect(undo.repeat).toBeUndefined()
+	})
+})

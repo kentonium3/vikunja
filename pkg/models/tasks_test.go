@@ -2923,3 +2923,215 @@ func TestTask_UpdateCompletionBucketLimit(t *testing.T) {
 		})
 	}
 }
+
+// One update that moves a repeating task to another project and completes it must leave the task
+// in the destination bucket that matches its final done state, and must not complete it a second
+// time from the stored rule while placing it.
+func TestTask_UpdateMoveCompletionBuckets(t *testing.T) {
+	const (
+		destProject  = 2
+		destView     = 8
+		destDefault  = 40
+		destDone     = 4
+		otherTaskID  = 1
+		weeklyCount3 = "FREQ=WEEKLY;INTERVAL=1;COUNT=3"
+	)
+	for _, tc := range []struct {
+		name          string
+		rule          string
+		newRule       string
+		undated       bool
+		fromCurrent   bool
+		noDefault     bool // destination view has no default bucket; its done bucket is first by position
+		fullDefault   bool // destination default bucket is at its limit
+		noManualViews bool // destination has no manual Kanban view
+		noDoneBucket  bool // destination view 8 has no done bucket
+		fullDone      bool // destination done bucket is at its limit
+		clearRule     bool // the update explicitly clears the rule
+		wantErr       bool
+		wantDone      bool
+		wantRule      string
+		wantDueDays   int // due date step in days; 0 = unchanged
+	}{
+		{name: "replace rule and complete continues", rule: "FREQ=DAILY;INTERVAL=1;COUNT=1", newRule: weeklyCount3, wantRule: "FREQ=WEEKLY;INTERVAL=1;COUNT=2", wantDueDays: 7},
+		{name: "replace rule on a board with done first and no default", rule: "FREQ=DAILY;INTERVAL=1;COUNT=1", newRule: weeklyCount3, noDefault: true, wantRule: "FREQ=WEEKLY;INTERVAL=1;COUNT=2", wantDueDays: 7},
+		{name: "exhausting move lands in done", rule: "FREQ=DAILY;INTERVAL=1;COUNT=1", wantDone: true},
+		{name: "exhausting move with a full default bucket", rule: "FREQ=DAILY;INTERVAL=1;COUNT=1", fullDefault: true, wantDone: true},
+		{name: "COUNT=2 move reopens", rule: "FREQ=DAILY;INTERVAL=1;COUNT=2", wantRule: "FREQ=DAILY;INTERVAL=1;COUNT=1", wantDueDays: 1},
+		{name: "never-ending move reopens", rule: "FREQ=DAILY;INTERVAL=1", wantRule: "FREQ=DAILY;INTERVAL=1", wantDueDays: 1},
+		{name: "non-repeating move completes", wantDone: true},
+		{name: "replace rule on an undated task", rule: "FREQ=DAILY;INTERVAL=1;COUNT=1", newRule: weeklyCount3, undated: true, wantRule: "FREQ=WEEKLY;INTERVAL=1;COUNT=2"},
+		{name: "replace rule from the completion date", rule: "FREQ=DAILY;INTERVAL=1;COUNT=1", newRule: weeklyCount3, fromCurrent: true, wantRule: "FREQ=WEEKLY;INTERVAL=1;COUNT=2", wantDueDays: -1},
+		{name: "add a rule and complete", newRule: weeklyCount3, wantDone: true, wantRule: weeklyCount3},
+		{name: "clear the rule and complete", rule: "FREQ=DAILY;INTERVAL=1;COUNT=2", clearRule: true, wantDueDays: 1},
+		{name: "stale COUNT echo and complete", rule: "FREQ=DAILY;INTERVAL=1;COUNT=1", newRule: "FREQ=DAILY;INTERVAL=1;COUNT=3", wantDone: true},
+		{name: "exhausting move into a view without a done bucket", rule: "FREQ=DAILY;INTERVAL=1;COUNT=1", noDoneBucket: true, wantDone: true},
+		{name: "exhausting move into a full done bucket is refused", rule: "FREQ=DAILY;INTERVAL=1;COUNT=1", fullDone: true, wantErr: true},
+		{name: "replace rule into a project without a manual kanban view", rule: "FREQ=DAILY;INTERVAL=1;COUNT=1", newRule: weeklyCount3, noManualViews: true, wantRule: "FREQ=WEEKLY;INTERVAL=1;COUNT=2", wantDueDays: 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db.LoadAndAssertFixtures(t)
+			s := db.NewSession()
+			defer s.Close()
+			u := &user.User{ID: 1}
+			now := time.Date(2025, time.December, 31, 12, 0, 0, 0, time.UTC)
+			originalNow := timeNow
+			timeNow = func() time.Time { return now }
+			t.Cleanup(func() { timeNow = originalNow })
+			due := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+			if tc.undated {
+				due = time.Time{}
+			}
+			_, err := s.ID(28).Cols("repeats", "due_date", "start_date", "end_date", "done", "done_at").Update(&Task{
+				Repeats: tc.rule, DueDate: due,
+			})
+			require.NoError(t, err)
+
+			// view ID -> {default, done} bucket expected for the destination
+			views := map[int64][2]int64{}
+			if tc.noManualViews {
+				_, err = s.ID(destView).Cols("bucket_configuration_mode").Update(&ProjectView{BucketConfigurationMode: BucketConfigurationModeNone})
+				require.NoError(t, err)
+			} else {
+				views[destView] = [2]int64{destDefault, destDone}
+				second := &ProjectView{
+					Title: "Second Kanban", ProjectID: destProject, ViewKind: ProjectViewKindKanban,
+					BucketConfigurationMode: BucketConfigurationModeManual,
+				}
+				require.NoError(t, second.Create(s, &user.User{ID: 3})) // project 2's owner
+				require.NotZero(t, second.DefaultBucketID)
+				require.NotZero(t, second.DoneBucketID)
+				views[second.ID] = [2]int64{second.DefaultBucketID, second.DoneBucketID}
+			}
+			if tc.noDefault {
+				_, err = s.ID(destView).Cols("default_bucket_id").Update(&ProjectView{DefaultBucketID: 0})
+				require.NoError(t, err)
+				first := &Bucket{}
+				_, err = s.Where("project_view_id = ?", destView).OrderBy("position asc, id asc").Get(first)
+				require.NoError(t, err)
+				require.EqualValues(t, destDone, first.ID, "fixture: the done bucket must be first by position")
+			}
+			if tc.noDoneBucket {
+				_, err = s.ID(destView).Cols("done_bucket_id").Update(&ProjectView{DoneBucketID: 0})
+				require.NoError(t, err)
+			}
+			if tc.fullDone {
+				_, err = s.ID(destDone).Cols("limit").Update(&Bucket{Limit: 1})
+				require.NoError(t, err)
+				_, err = s.Insert(&TaskBucket{TaskID: otherTaskID, ProjectViewID: destView, BucketID: destDone})
+				require.NoError(t, err)
+			}
+			if tc.fullDefault {
+				_, err = s.ID(destDefault).Cols("limit").Update(&Bucket{Limit: 1})
+				require.NoError(t, err)
+				_, err = s.Insert(&TaskBucket{TaskID: otherTaskID, ProjectViewID: destView, BucketID: destDefault})
+				require.NoError(t, err)
+			}
+			require.NoError(t, s.Commit())
+			require.NoError(t, s.Close())
+			s = db.NewSession()
+			defer s.Close()
+
+			task, err := GetTaskSimple(s, &Task{ID: 28})
+			require.NoError(t, err)
+			task.ProjectID = destProject
+			task.Done = true
+			if tc.newRule != "" {
+				task.Repeats = tc.newRule
+				task.RepeatsFromCurrentDate = tc.fromCurrent
+			}
+			if tc.clearRule {
+				task.Repeats = ""
+				task.Repeat = nil
+			}
+			err = task.Update(s, u)
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.True(t, IsErrBucketLimitExceeded(err), "got %v", err)
+				return
+			}
+			require.NoError(t, err)
+			require.NoError(t, s.Commit())
+
+			stored, err := GetTaskSimple(s, &Task{ID: 28})
+			require.NoError(t, err)
+			assert.EqualValues(t, destProject, stored.ProjectID)
+			assert.Equal(t, tc.wantDone, stored.Done)
+			assert.Equal(t, tc.wantDone, task.Done)
+			assert.Equal(t, tc.wantRule, stored.Repeats)
+			switch {
+			case tc.undated:
+				assert.False(t, stored.Done)
+			case tc.wantDueDays < 0:
+				// From the completion date: one weekly step from now.
+				assert.Equal(t, now.AddDate(0, 0, 7).Unix(), stored.DueDate.Unix())
+			default:
+				assert.Equal(t, due.AddDate(0, 0, tc.wantDueDays).Unix(), stored.DueDate.Unix())
+			}
+
+			for viewID, buckets := range views {
+				want := buckets[0]
+				if tc.wantDone {
+					want = buckets[1]
+				}
+				if tc.noDefault && viewID == destView && !tc.wantDone {
+					want = destDefault // the first bucket by position that is not the done bucket
+				}
+				if tc.noDoneBucket && viewID == destView {
+					want = destDefault
+				}
+				rows := []*TaskBucket{}
+				require.NoError(t, s.Where("task_id = ? AND project_view_id = ?", 28, viewID).Find(&rows))
+				require.Len(t, rows, 1, "membership rows in view %d", viewID)
+				assert.Equal(t, want, rows[0].BucketID, "membership in view %d", viewID)
+				positions, err := s.Where("task_id = ? AND project_view_id = ?", 28, viewID).Count(&TaskPosition{})
+				require.NoError(t, err)
+				assert.EqualValues(t, 1, positions, "position rows in view %d", viewID)
+			}
+			if tc.noManualViews {
+				rows, err := s.Where("task_id = ?", 28).Count(&TaskBucket{})
+				require.NoError(t, err)
+				assert.Zero(t, rows)
+			}
+		})
+	}
+}
+
+// Reopening a done task while giving it a rule in the same update (an Undo that restores the rule
+// the completion ended) must take it out of the done buckets like any other reopened task.
+func TestTask_UpdateReopenWithRestoredRule(t *testing.T) {
+	db.LoadAndAssertFixtures(t)
+	s := db.NewSession()
+	defer s.Close()
+	u := &user.User{ID: 1}
+	const view, defaultBucket, doneBucket = 4, 1, 3
+	due := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	// As completing the last occurrence of a COUNT=1 rule leaves it: done, rule cleared, in Done.
+	_, err := s.ID(28).Cols("repeats", "due_date", "done", "done_at").Update(&Task{
+		Repeats: "", DueDate: due, Done: true, DoneAt: due,
+	})
+	require.NoError(t, err)
+	_, err = s.Where("task_id = ? AND project_view_id = ?", 28, view).Cols("bucket_id").Update(&TaskBucket{BucketID: doneBucket})
+	require.NoError(t, err)
+	require.NoError(t, s.Commit())
+	require.NoError(t, s.Close())
+	s = db.NewSession()
+	defer s.Close()
+
+	task, err := GetTaskSimple(s, &Task{ID: 28})
+	require.NoError(t, err)
+	task.Done = false
+	task.Repeats = "FREQ=DAILY;INTERVAL=1;COUNT=1"
+	require.NoError(t, task.Update(s, u))
+	require.NoError(t, s.Commit())
+
+	stored, err := GetTaskSimple(s, &Task{ID: 28})
+	require.NoError(t, err)
+	assert.False(t, stored.Done)
+	assert.Equal(t, "FREQ=DAILY;INTERVAL=1;COUNT=1", stored.Repeats)
+	assert.Equal(t, due.Unix(), stored.DueDate.Unix())
+	rows := []*TaskBucket{}
+	require.NoError(t, s.Where("task_id = ? AND project_view_id = ?", 28, view).Find(&rows))
+	require.Len(t, rows, 1)
+	assert.EqualValues(t, defaultBucket, rows[0].BucketID)
+}

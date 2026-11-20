@@ -1116,6 +1116,80 @@ test.describe('Task recurrence', () => {
 		})
 	})
 
+	// Undo after checking a task off in the list restores it as it was before the check: open, with
+	// the same due date, rule, remaining count and reminders. The server is the judge: state is read back.
+	test.describe('undo after completing', () => {
+		const DUE = '2030-01-10T15:00:00.000Z'
+		const REMINDER = {relative_to: 'due_date', relative_period: -3600}
+
+		async function checkThenUndo(page: Page, title: string) {
+			const views = await createDefaultViews(1)
+			await page.goto(`/projects/1/${views[0].id}`)
+			const row = page.locator('.single-task').filter({hasText: title})
+			const completed = waitForTaskPatch(page, 1)
+			await row.locator('.fancy-checkbox').click()
+			await expectPatchOk(completed)
+			const toast = page.locator('.global-notification').filter({hasText: 'done'})
+			await toast.getByRole('button', {name: 'Undo'}).click()
+		}
+
+		async function expectRestored(apiContext: APIRequestContext, userToken: string, repeat: Record<string, unknown>) {
+			await expect.poll(async () => {
+				const task = await getTaskV2(apiContext, userToken, 1)
+				return {
+					done: task.done,
+					due: new Date(task.due_date!).toISOString(),
+					repeat: task.repeat ? {freq: task.repeat.freq, interval: task.repeat.interval, count: task.repeat.count ?? 0, until: task.repeat.until ?? null} : null,
+					reminders: (task.reminders ?? []).map(r => ({relative_to: r.relative_to, relative_period: r.relative_period})),
+				}
+			}).toStrictEqual({
+				done: false,
+				due: DUE,
+				repeat: {interval: 1, count: 0, until: null, ...repeat},
+				reminders: [REMINDER],
+			})
+		}
+
+		test('restores a repeat that ended after one time', async ({authenticatedPage: page, apiContext, userToken}) => {
+			await createTask(1, new Date(DUE), 'Ends after one')
+			await seedRepeat(apiContext, userToken, 1, {freq: 'daily', count: 1}, {reminders: [REMINDER]})
+			await checkThenUndo(page, 'Ends after one')
+			await expectRestored(apiContext, userToken, {freq: 'daily', count: 1})
+		})
+
+		test('restores the remaining count of a repeat that ends after two times', async ({
+			authenticatedPage: page, apiContext, userToken,
+		}) => {
+			await createTask(1, new Date(DUE), 'Ends after two')
+			await seedRepeat(apiContext, userToken, 1, {freq: 'daily', count: 2}, {reminders: [REMINDER]})
+			await checkThenUndo(page, 'Ends after two')
+			await expectRestored(apiContext, userToken, {freq: 'daily', count: 2})
+
+			// Both occurrences are still there: two completions end it, not one.
+			for (const wantDone of [false, true]) {
+				const completed = waitForTaskPatch(page, 1)
+				await page.locator('.single-task').filter({hasText: 'Ends after two'}).locator('.fancy-checkbox').click()
+				await expectPatchOk(completed)
+				await expect.poll(async () => (await getTaskV2(apiContext, userToken, 1)).done).toBe(wantDone)
+			}
+		})
+
+		test('restores a repeat whose end date is its last occurrence', async ({authenticatedPage: page, apiContext, userToken}) => {
+			const until = '2030-01-10T23:59:59Z'
+			await createTask(1, new Date(DUE), 'Ends on a date')
+			await seedRepeat(apiContext, userToken, 1, {freq: 'daily', until}, {reminders: [REMINDER]})
+			await checkThenUndo(page, 'Ends on a date')
+			await expectRestored(apiContext, userToken, {freq: 'daily', until})
+		})
+
+		test('restores a repeat that never ends, as before', async ({authenticatedPage: page, apiContext, userToken}) => {
+			await createTask(1, new Date(DUE), 'Never ends')
+			await seedRepeat(apiContext, userToken, 1, {freq: 'daily'}, {reminders: [REMINDER]})
+			await checkThenUndo(page, 'Never ends')
+			await expectRestored(apiContext, userToken, {freq: 'daily'})
+		})
+	})
+
 	test.describe('preview across a daylight-saving change', () => {
 		test.use({timezoneId: NEW_YORK})
 

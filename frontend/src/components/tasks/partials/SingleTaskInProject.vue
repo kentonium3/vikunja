@@ -358,19 +358,45 @@ const isOverdue = computed(() => (
 	new Date(task.value.due_date ?? 0).getTime() <= now.value.getTime()
 ))
 
-let oldTask: ITask
+// What an Undo reverts: the task as it was before the check, and as that completion left it. Each
+// toast keeps its own, so undoing an earlier check still restores that check's state.
+type UndoContext = {snapshot: ITask, completed: ITask}
 
-async function markAsDone(checked: boolean, wasReverted: boolean = false) {
-	if (!wasReverted) oldTask = {...task.value}
+// Completing a rule that ends after a number of times lowers its remaining count.
+function countWasLowered(before: ITask, after: ITask) {
+	const was = before.repeat?.count ?? 0
+	const now = after.repeat?.count ?? 0
+	return was > 0 && now > 0 && now < was
+}
+
+// The server keeps the stored count when a save raises it on an otherwise unchanged rule, since a
+// stale tab could send one, so Undo clears the rule and then sets the one the task had before.
+async function restoreLoweredCount(snapshot: ITask, done: boolean) {
+	await updateTask.mutateAsync({...snapshot, id: snapshot.id!, done, repeat: null})
+	return updateTask.mutateAsync({...snapshot, id: snapshot.id!, done})
+}
+
+async function markAsDone(checked: boolean, undo?: UndoContext) {
+	const snapshot = undo?.snapshot ?? {...task.value}
 
 	// Fire the request immediately and with the intended done value snapshotted, so a re-render or
 	// teardown during the animation delay can neither drop the save nor make it send a stale state.
-	const source = wasReverted && taskIsRepeating.value ? oldTask : task.value
-	const updatePromise = updateTask.mutateAsync({
-		...source,
-		id: source.id!,
-		done: checked,
-	}).catch(() => undefined)
+	// Undo restores the task as it was before the check whenever it had a repeat, including one the
+	// completion ended. A read-only repeat has parts the structured repeat cannot carry, so it is never
+	// written back: Undo then leaves the stored rule as the completion left it.
+	const editable = isRepeating(snapshot.repeat) && !snapshot.repeat?.read_only
+	const restore = undo !== undefined && (taskIsRepeating.value || editable)
+	// The write leaves a read-only repeat out altogether, so the stored rule is never touched.
+	const restored = snapshot.repeat?.read_only ? {...snapshot, repeat: undefined} : snapshot
+	const source = restore ? restored : task.value
+	const save = restore && editable && countWasLowered(undo.snapshot, undo.completed)
+		? restoreLoweredCount(source, checked)
+		: updateTask.mutateAsync({
+			...source,
+			id: source.id!,
+			done: checked,
+		})
+	const updatePromise = save.catch(() => undefined)
 
 	const finish = async () => {
 		const newTask = await updatePromise
@@ -378,7 +404,7 @@ async function markAsDone(checked: boolean, wasReverted: boolean = false) {
 
 		updateDueDate()
 
-		if (wasReverted) {
+		if (undo) {
 			return
 		}
 
@@ -394,7 +420,7 @@ async function markAsDone(checked: boolean, wasReverted: boolean = false) {
 
 		success({message}, [{
 			title: t('task.undo'),
-			callback: () => undoDone(checked),
+			callback: () => undoDone(checked, {snapshot, completed: newTask}),
 		}])
 	}
 
@@ -405,8 +431,8 @@ async function markAsDone(checked: boolean, wasReverted: boolean = false) {
 	}
 }
 
-function undoDone(checked: boolean) {
-	markAsDone(!checked, true)
+function undoDone(checked: boolean, undo: UndoContext) {
+	markAsDone(!checked, undo)
 }
 
 async function toggleFavorite() {

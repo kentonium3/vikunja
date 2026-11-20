@@ -1632,6 +1632,12 @@ func (t *Task) updateSingleTaskInViews(s *xorm.Session, a web.Auth, fields []str
 		t.Repeats = decision.Repeats
 	}
 
+	// A task moved to another project and completed in the same update, with a rule before or after
+	// it, is placed in the destination buckets once its final done state is known (after updateDone,
+	// below). Placing it here would go through updateTaskBucket, which completes the task a second
+	// time from the stored rule when it lands in a done bucket.
+	movedCompletion := t.ProjectID != ot.ProjectID && !ot.Done && t.Done && (ot.isRepeating() || t.isRepeating())
+
 	// If the task is being moved between projects, make sure to move the bucket + index as well
 	if t.ProjectID != 0 && ot.ProjectID != t.ProjectID {
 		// Another task may already hold this retired address; the latest holder wins.
@@ -1682,6 +1688,9 @@ func (t *Task) updateSingleTaskInViews(s *xorm.Session, a web.Auth, fields []str
 		}
 
 		for _, view := range views {
+			if movedCompletion {
+				break
+			}
 			var bucketID = view.DoneBucketID
 			if bucketID == 0 || !t.Done {
 				bucketID, err = getDefaultBucketID(s, view)
@@ -1713,8 +1722,10 @@ func (t *Task) updateSingleTaskInViews(s *xorm.Session, a web.Auth, fields []str
 		}
 	}
 
-	// When a task changed its done status, make sure it is in the correct bucket
-	if t.ProjectID == ot.ProjectID && !t.isRepeating() && t.Done != ot.Done {
+	// When a task changed its done status, make sure it is in the correct bucket. Completing a
+	// repeating task is placed below, once completion has decided whether it reopens; reopening one,
+	// as an Undo that restores the rule the completion ended does, moves it out of done like any task.
+	if t.ProjectID == ot.ProjectID && t.Done != ot.Done && (!t.isRepeating() || !t.Done) {
 		err = t.moveTaskToDoneBuckets(s, a, views)
 		if err != nil {
 			return
@@ -1774,6 +1785,11 @@ func (t *Task) updateSingleTaskInViews(s *xorm.Session, a web.Auth, fields []str
 			err = t.moveTaskToDefaultBuckets(s, a, views)
 		}
 		if err != nil {
+			return
+		}
+	}
+	if movedCompletion {
+		if err = t.placeMovedTaskInBuckets(s, a, views); err != nil {
 			return
 		}
 	}
@@ -2087,6 +2103,63 @@ func (t *Task) placeTaskInDoneBuckets(s *xorm.Session, a web.Auth, views []*Proj
 		}
 	}
 	return nil
+}
+
+// placeMovedTaskInBuckets places a task that was moved to another project and completed in the same
+// update, once its final done state is known: in each destination view's done bucket when it is still
+// done, otherwise in the view's default bucket. The move already removed the old placements. Rows are
+// written directly rather than through updateTaskBucket, so placing a task in a done bucket never
+// completes it again from the stored rule, and only the final bucket's limit is checked.
+func (t *Task) placeMovedTaskInBuckets(s *xorm.Session, a web.Auth, views []*ProjectView) error {
+	for _, view := range views {
+		bucketID, err := movedTaskBucketID(s, view, t.Done)
+		if err != nil {
+			return err
+		}
+		bucket, err := getBucketByID(s, bucketID)
+		if err != nil {
+			return err
+		}
+		if _, err := checkBucketLimit(s, a, t, bucket, view, 0); err != nil {
+			return err
+		}
+		tb := &TaskBucket{TaskID: t.ID, ProjectViewID: view.ID, BucketID: bucketID}
+		if err := tb.upsert(s); err != nil {
+			return err
+		}
+		tp, err := calculateNewPositionForTask(s, a, t, view)
+		if err != nil {
+			return err
+		}
+		if err := updateTaskPosition(s, a, tp); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// movedTaskBucketID is the bucket a moved task belongs in: the done bucket when it is done and the
+// view has one, otherwise the default bucket. Without a configured default, an open task takes the
+// first bucket by position that is not the done bucket, so it never lands in Done.
+func movedTaskBucketID(s *xorm.Session, view *ProjectView, done bool) (int64, error) {
+	if done && view.DoneBucketID != 0 {
+		return view.DoneBucketID, nil
+	}
+	if view.DefaultBucketID != 0 || view.DoneBucketID == 0 {
+		return getDefaultBucketID(s, view)
+	}
+	bucket := &Bucket{}
+	has, err := s.
+		Where("project_view_id = ? AND id != ?", view.ID, view.DoneBucketID).
+		OrderBy("position asc, id asc").
+		Get(bucket)
+	if err != nil {
+		return 0, err
+	}
+	if !has {
+		return getDefaultBucketID(s, view)
+	}
+	return bucket.ID, nil
 }
 
 // moveTaskToDefaultBuckets moves the task to the default bucket of
